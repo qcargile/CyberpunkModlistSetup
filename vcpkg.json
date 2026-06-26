@@ -1,0 +1,14 @@
+{
+  "name": "cyberpunk-modlist-setup",
+  "version-string": "1.0.0",
+  "dependencies": [
+    "simdjson",
+    {
+      "name": "imgui",
+      "features": [
+        "dx11-binding",
+        "win32-binding"
+      ]
+    }
+  ]
+}

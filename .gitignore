@@ -1,0 +1,7 @@
+build/
+dist/
+vcpkg_installed/
+.manual-github
+*.user
+*.obj
+*.pdb
