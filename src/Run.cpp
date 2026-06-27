@@ -86,6 +86,11 @@ void LaunchDetached(const std::wstring& exe) noexcept {
                     std::filesystem::path(exe).parent_path().wstring().c_str(), SW_SHOWNORMAL);
 }
 
+void LaunchDetachedArgs(const std::wstring& exe, const std::wstring& args) noexcept {
+    ::ShellExecuteW(nullptr, L"open", exe.c_str(), args.c_str(),
+                    std::filesystem::path(exe).parent_path().wstring().c_str(), SW_SHOWNORMAL);
+}
+
 int RunElevatedSelf(const std::wstring& args, std::string& err) noexcept {
     wchar_t self[1024] = {};
     if (::GetModuleFileNameW(nullptr, self, 1024) == 0) { err = "could not resolve own path"; return -1; }

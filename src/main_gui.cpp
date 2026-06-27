@@ -361,7 +361,7 @@ void DrawAutoRow(App& app, Step& s) {
             ImGui::TextColored(kBlue, "working...");
         } else {
             ImGui::PushTextWrapPos(ww - 8.0f);
-            ImGui::TextColored(IsResolved(s.status) ? kDim : (s.status == Status::Warning ? kAmber : kDim), "%s", s.statusText.c_str());
+            ImGui::TextColored(IsResolved(s.status) ? kGreen : kAmber, "%s", s.statusText.c_str());
             ImGui::PopTextWrapPos();
         }
         ImGui::Unindent(22.0f);
@@ -394,9 +394,6 @@ void DrawCheckRow(App& app, Step& s) {
         } else if (s.id == "phantomliberty" && steam) {
             ImGui::SameLine(ww - 178.0f);
             if (ImGui::Button("Get Phantom Liberty", ImVec2(168, 0))) OpenUrl(L"steam://store/2138330");
-        } else if ((s.id == "vortex_hardlink" || s.id == "vortex_extension") && !m.vortexExe.empty()) {
-            ImGui::SameLine(ww - 122.0f);
-            if (ImGui::Button("Open Vortex", ImVec2(110, 0))) OpenUrl(m.vortexExe);
         } else if (!s.url.empty()) {
             ImGui::SameLine(ww - 108.0f);
             if (ImGui::Button("Open", ImVec2(92, 0))) OpenUrl(Widen(s.url));
@@ -406,7 +403,7 @@ void DrawCheckRow(App& app, Step& s) {
     if (!s.statusText.empty()) {
         ImGui::Indent(22.0f);
         ImGui::PushTextWrapPos(ww - 8.0f);
-        ImGui::TextColored(IsResolved(s.status) ? kDim : (s.status == Status::Warning ? kAmber : kDim), "%s", s.statusText.c_str());
+        ImGui::TextColored(IsResolved(s.status) ? kGreen : kAmber, "%s", s.statusText.c_str());
         ImGui::PopTextWrapPos();
         ImGui::Unindent(22.0f);
     }
@@ -419,18 +416,18 @@ void DrawManualRow(App& app, Step& s, int num) {
     bool busy = m.busy.load();
     float ww = RowRightEdge();
 
+    StatusDot(s.status);
     ImGui::TextColored(g_accent, "%d.", num);
     ImGui::SameLine(0.0f, 8.0f);
     PushBold(); ImGui::TextUnformatted(s.title.c_str()); PopBold();
 
     if (s.id == "wj_findlist") {
-        ImGui::SameLine(ww - 270.0f);
-        if (ImGui::Button("Gallery", ImVec2(78, 0))) OpenUrl(Widen(std::string(WabbajackGalleryUrl())));
-        if (!s.url.empty()) { ImGui::SameLine(); if (ImGui::Button("Archive", ImVec2(78, 0))) OpenUrl(Widen(s.url)); }
-        ImGui::SameLine();
-        ImGui::BeginDisabled(busy || !m.wabbajackReady);
-        if (ImGui::Button("Open WJ", ImVec2(82, 0))) LaunchWabbajack(m);
+        ImGui::SameLine(ww - 296.0f);
+        ImGui::BeginDisabled(busy);
+        if (ImGui::Button("Send to Wabbajack", ImVec2(190, 0))) Launch(app, [&m]() { SendListToWabbajack(m); });
         ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Gallery", ImVec2(94, 0))) OpenUrl(Widen(std::string(WabbajackGalleryUrl())));
     } else if (s.id == "vortex_collection") {
         ImGui::SameLine(ww - 200.0f);
         ImGui::BeginDisabled(busy || !m.vortexReady || m.config.collectionUrl.empty());
@@ -452,15 +449,20 @@ void DrawManualRow(App& app, Step& s, int num) {
     } else if (s.id == "defender") {
         ImGui::SameLine(ww - 162.0f);
         if (ImGui::Button("Windows Security", ImVec2(150, 0))) OpenUrl(L"windowsdefender://");
+    } else if (s.id == "vortex_extension" || s.id == "vortex_redmod" || s.id == "vortex_staging" || s.id == "vortex_hardlink" || s.id == "vortex_profile") {
+        if (!m.vortexExe.empty()) {
+            ImGui::SameLine(ww - 122.0f);
+            if (ImGui::Button("Open Vortex", ImVec2(110, 0))) OpenUrl(m.vortexExe);
+        }
     } else if (!s.url.empty()) {
         ImGui::SameLine(ww - 108.0f);
         if (ImGui::Button("Open", ImVec2(92, 0))) OpenUrl(Widen(s.url));
     }
 
-    if (!s.statusText.empty() && !IsResolved(s.status)) {
+    if (!s.statusText.empty()) {
         ImGui::Indent(22.0f);
         ImGui::PushTextWrapPos(ww - 40.0f);
-        ImGui::TextColored(kAmber, "%s", s.statusText.c_str());
+        ImGui::TextColored(IsResolved(s.status) ? kGreen : kAmber, "%s", s.statusText.c_str());
         ImGui::PopTextWrapPos();
         ImGui::Unindent(22.0f);
     }
@@ -535,7 +537,8 @@ void DrawCleanCard(App& app) {
 
     ImVec2 center = ImGui::GetMainViewport()->GetCenter();
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    if (ImGui::BeginPopupModal("confirm_clean", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    bool ccOpen = true;
+    if (ImGui::BeginPopupModal("Clean game folder###confirm_clean", &ccOpen, ImGuiWindowFlags_AlwaysAutoResize)) {
         const CleanPreflight& pf = m.cleanPreflight;
         if (!pf.blockers.empty()) {
             ImGui::TextColored(kRed, "Can't clean safely yet:");
@@ -637,6 +640,7 @@ void DrawListPick(App& app) {
         m.list = id;
         m.config = ConfigForList(id);
         m.mode = m.config.collectionUrl.empty() ? Mode::MO2 : Mode::None;
+        SuggestPaths(m);
         BuildCatalog(m);
         DetectAll(m);
         SaveState(m);
@@ -755,8 +759,8 @@ void DrawManagerPick(App& app) {
     ImGui::SameLine(0, gap);
     bool pVtx = mgrCard("Vortex  /  Collection", "Install the Nexus collection through Vortex");
 
-    if (pMo2) { m.mode = Mode::MO2; DetectAll(m); SaveState(m); }
-    if (pVtx) { m.mode = Mode::Vortex; DetectAll(m); SaveState(m); }
+    if (pMo2) { m.mode = Mode::MO2; SuggestPaths(m); DetectAll(m); SaveState(m); }
+    if (pVtx) { m.mode = Mode::Vortex; SuggestPaths(m); DetectAll(m); SaveState(m); }
 
     ImGui::Dummy(ImVec2(0, 24));
     float backW = 200.0f;
@@ -771,6 +775,13 @@ void DrawChecklist(App& app) {
 
     if (!busy && m.summaryPending.exchange(false)) ImGui::OpenPopup("run_summary");
 
+    static bool s_openApplyAll = false;
+    if (s_openApplyAll) { ImGui::OpenPopup("confirm_applyall"); s_openApplyAll = false; }
+
+    static uint64_t s_lastAutoDetect = 0;
+    uint64_t nowAutoMs = ::GetTickCount64();
+    if (!busy && nowAutoMs - s_lastAutoDetect > 4000) { DetectAll(m); s_lastAutoDetect = nowAutoMs; }
+
     ID3D11ShaderResourceView* heroTex = (m.list == ListId::ChromeAndBlood) ? g_heroCab
                                       : (m.list == ListId::Wtnc) ? g_heroWtnc : nullptr;
     int heroTexW = (m.list == ListId::ChromeAndBlood) ? g_cabW : g_wtncW;
@@ -783,7 +794,9 @@ void DrawChecklist(App& app) {
         PopBold();
         ImGui::SetWindowFontScale(1.0f);
         ImGui::TextColored(kDim, "Preinstallation for Cyberpunk 2077  -  %s", modeName);
-        ImGui::TextColored(kGray, "Work top to bottom:   1 set your folders     2 run the automated steps     3 clear the checks     4 do your part.");
+        ImGui::TextColored(kGray, m.mode == Mode::MO2
+            ? "Work top to bottom:   1 set your Wabbajack folder     2 run the automated steps     3 clear the checks     4 do your part."
+            : "Work top to bottom:   run the automated steps, clear the checks, then do your part in Vortex.");
         ImGui::Dummy(ImVec2(0, 4));
         ImGui::BeginDisabled(busy);
         if (!m.config.website.empty()) { if (ImGui::Button("Website", ImVec2(100, 0))) OpenUrl(Widen(m.config.website)); ImGui::SameLine(); }
@@ -812,13 +825,30 @@ void DrawChecklist(App& app) {
     ImGui::EndChild();
     ImGui::Dummy(ImVec2(0, 6));
 
+    ImGui::BeginDisabled(busy);
+    if (ImGui::Button("Re-scan", ImVec2(150, 34))) DetectAll(m);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Re-detect every check + step. Use any time - after you install or change something by hand.");
+    ImGui::SameLine();
+    if (ImGui::Button("Manual guide", ImVec2(160, 34))) ImGui::OpenPopup("manual_guide");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Every step written out with links - your fallback if anything won't run.");
+    ImGui::SameLine();
+    if (ImGui::Button("Health report", ImVec2(160, 34))) ImGui::OpenPopup("health_report");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("A copyable status summary - paste it to whoever's helping you.");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!JournalHasEntries());
+    if (ImGui::Button("Undo changes", ImVec2(150, 34))) Launch(app, [&m]() { UndoAll(m); });
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Reverse everything the tool changed - game folder, AppData, Steam setting.");
+    ImGui::EndDisabled();
+    ImGui::EndDisabled();
+    ImGui::Dummy(ImVec2(0, 6));
+
     if (m.mode == Mode::MO2 && m.vortexManagingCp) {
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.32f, 0.20f, 0.04f, 0.30f));
         ImGui::BeginChild("migbanner", ImVec2(0, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_Borders);
         ImGui::PopStyleColor();
         PushBold(); ImGui::TextColored(kAmber, "Switching from Vortex?"); PopBold();
         ImGui::PushTextWrapPos(0.0f);
-        ImGui::TextColored(kDim, "Vortex is set up to manage Cyberpunk on this PC. Before installing with Wabbajack: in Vortex open Mods, press Ctrl+A, Remove (untick 'Delete Archive' unless you're Nexus Premium), then Games > the Cyberpunk 3-dots > Stop Managing. The Clean step below resets the game folder + AppData.");
+        ImGui::TextColored(kDim, "Vortex is set up to manage Cyberpunk on this PC. Before installing with Wabbajack: in Vortex open Mods, press Ctrl+A, Remove (untick 'Delete Archive' unless you're Nexus Premium), then click the Home icon - Games - the Cyberpunk 3-dots - Stop Managing. The Clean step below resets the game folder + AppData.");
         ImGui::PopTextWrapPos();
         if (!m.vortexExe.empty()) {
             ImGui::Dummy(ImVec2(0, 2));
@@ -828,79 +858,44 @@ void DrawChecklist(App& app) {
         ImGui::Dummy(ImVec2(0, 6));
     }
 
-    ImGui::BeginDisabled(busy);
-    PushBold(); ImGui::TextColored(kHead, "Step 1   -   Set your folders"); PopBold();
-    InfoHint("These two folders are for the MODLIST only. The tool's own downloads (runtimes, the Wabbajack/Vortex installer) go to a private cache automatically, so they never clutter these.");
-    ImGui::Dummy(ImVec2(0, 2));
-    ImGui::TextColored(kDim, "Install folder");
-    InfoHint("Where Wabbajack/Vortex installs the modlist. Use an empty folder on a non-system drive, outside Program Files - e.g. D:\\Modlists\\WTNC.");
-    ImGui::SetNextItemWidth(-252.0f);
-    ImGui::InputText("##install", m.installPath, sizeof(m.installPath));
-    ImGui::SameLine();
-    if (ImGui::Button("Browse##inst", ImVec2(88, 0))) {
-        std::wstring picked;
-        if (BrowseForFolder(Widen(std::string(m.installPath)), picked)) {
-            std::string p = cleanslate::NarrowU8(picked);
-            strncpy_s(m.installPath, p.c_str(), sizeof(m.installPath) - 1);
-            DetectAll(m);
-            SaveState(m);
+    if (m.mode == Mode::MO2) {
+        ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+        PushBold(); bool openFolders = ImGui::CollapsingHeader("Step 1   -   Set your Wabbajack folder###folders"); PopBold();
+        if (openFolders) {
+            ImGui::BeginDisabled(busy);
+            ImGui::TextColored(kDim, "Wabbajack folder");
+            InfoHint("Where the tool puts Wabbajack.exe and launches it from. The modlist's Install + Downloads folders are set inside Wabbajack itself (it remembers them after the first install) - the tool doesn't need them.");
+            ImGui::SetNextItemWidth(-252.0f);
+            ImGui::InputText("##wjpath", m.wjPath, sizeof(m.wjPath));
+            ImGui::SameLine();
+            if (ImGui::Button("Browse##wj", ImVec2(88, 0))) {
+                std::wstring picked;
+                if (BrowseForFolder(Widen(std::string(m.wjPath)), picked)) {
+                    std::string p = cleanslate::NarrowU8(picked);
+                    strncpy_s(m.wjPath, p.c_str(), sizeof(m.wjPath) - 1);
+                    DetectAll(m);
+                    SaveState(m);
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Create + open", ImVec2(146, 0))) {
+                std::error_code ec;
+                std::filesystem::create_directories(std::filesystem::path(Widen(std::string(m.wjPath))), ec);
+                OpenFolder(Widen(std::string(m.wjPath)));
+            }
+            ImGui::EndDisabled();
+            ImGui::TextColored(kGray, "Pick a drive with room for the modlist - the space/OneDrive/writable checks run against this drive. Same drive as the game is ideal.");
+
+            if (!m.vortexDownloadsDir.empty()) {
+                ImGui::Dummy(ImVec2(0, 4));
+                ImGui::PushTextWrapPos(0.0f);
+                ImGui::TextColored(kBlue, "Reuse your Vortex downloads: in Wabbajack, point Downloads at %s to skip re-downloading.",
+                                   cleanslate::NarrowU8(m.vortexDownloadsDir).c_str());
+                ImGui::PopTextWrapPos();
+                if (ImGui::SmallButton("Open Vortex downloads")) OpenFolder(m.vortexDownloadsDir);
+            }
         }
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Create folders", ImVec2(146, 0))) {
-        std::error_code ec;
-        std::filesystem::create_directories(std::filesystem::path(Widen(std::string(m.installPath))), ec);
-        std::filesystem::create_directories(std::filesystem::path(Widen(std::string(m.downloadsPath))), ec);
-    }
-    ImGui::TextColored(kDim, "Downloads folder");
-    InfoHint("Where the modlist's mod archives download (Wabbajack/Vortex point here). Same drive is fine. Migrating from Vortex? Point this at your old downloads to skip re-downloading.");
-    ImGui::SetNextItemWidth(-252.0f);
-    ImGui::InputText("##downloads", m.downloadsPath, sizeof(m.downloadsPath));
-    ImGui::SameLine();
-    if (ImGui::Button("Browse##dl", ImVec2(88, 0))) {
-        std::wstring picked;
-        if (BrowseForFolder(Widen(std::string(m.downloadsPath)), picked)) {
-            std::string p = cleanslate::NarrowU8(picked);
-            strncpy_s(m.downloadsPath, p.c_str(), sizeof(m.downloadsPath) - 1);
-            SaveState(m);
-        }
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Open downloads", ImVec2(146, 0))) {
-        std::error_code ec;
-        std::filesystem::create_directories(std::filesystem::path(Widen(std::string(m.downloadsPath))), ec);
-        OpenFolder(Widen(std::string(m.downloadsPath)));
-    }
-    ImGui::EndDisabled();
-    ImGui::TextColored(kGray, "Same drive as the game, outside Program Files. The tool's own installers never land here.");
-
-    if (m.mode == Mode::MO2 && !m.vortexDownloadsDir.empty()) {
-        ImGui::Dummy(ImVec2(0, 4));
-        ImGui::PushTextWrapPos(0.0f);
-        ImGui::TextColored(kBlue, "Reuse your Vortex downloads: point Wabbajack's Downloads at %s (or copy the files in) to skip re-downloading.",
-                           cleanslate::NarrowU8(m.vortexDownloadsDir).c_str());
-        ImGui::PopTextWrapPos();
-        if (ImGui::SmallButton("Open Vortex downloads")) OpenFolder(m.vortexDownloadsDir);
-    }
-
-    ImGui::Dummy(ImVec2(0, 8));
-    ImGui::BeginDisabled(busy);
-    if (PrimaryButton(busy ? "Working..." : "Run all automatic steps", ImVec2(-1.0f, 44.0f)))
-        ImGui::OpenPopup("confirm_applyall");
-    ImGui::EndDisabled();
-    ImGui::TextColored(kGray, "Opens a checklist to pick from (runtimes, tweaks, %s download). Asks once for admin.",
-                       (m.mode == Mode::Vortex) ? "Vortex" : "Wabbajack");
-    ImGui::SameLine();
-    ImGui::BeginDisabled(busy);
-    if (ImGui::SmallButton("Re-scan")) DetectAll(m);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Re-detect every check + step. Use after you install or change something by hand.");
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Manual guide")) ImGui::OpenPopup("manual_guide");
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Every step written out with links - your fallback if anything won't run.");
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Health report")) ImGui::OpenPopup("health_report");
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("A copyable summary of every step's status - send it to the curator if you need help.");
-    ImGui::EndDisabled();
 
     {
         ImVec2 center = ImGui::GetMainViewport()->GetCenter();
@@ -966,7 +961,8 @@ void DrawChecklist(App& app) {
         ImVec2 center = ImGui::GetMainViewport()->GetCenter();
         ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
         ImGui::SetNextWindowSize(ImVec2(560, 0), ImGuiCond_Appearing);
-        if (ImGui::BeginPopupModal("confirm_applyall", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        bool caOpen = true;
+        if (ImGui::BeginPopupModal("Run automated setup###confirm_applyall", &caOpen, ImGuiWindowFlags_AlwaysAutoResize)) {
             ImGui::Text("What should run on your PC for %s?", modeName);
             ImGui::TextColored(kDim, "Pick what to apply. Nothing is deleted.");
             ImGui::Dummy(ImVec2(0, 6));
@@ -974,7 +970,7 @@ void DrawChecklist(App& app) {
             ImGui::Checkbox("Enable Windows long paths  (administrator)", &m.optLongPaths);
             if (!(m.platform == Platform::GOG || m.platform == Platform::Epic))
                 ImGui::Checkbox("Steam: update Cyberpunk only on launch  (closes Steam)", &m.optSteamTweaks);
-            ImGui::Checkbox(m.mode == Mode::Vortex ? "Download + install Vortex" : "Download Wabbajack into the install folder", &m.optDownload);
+            ImGui::Checkbox(m.mode == Mode::Vortex ? "Download + install Vortex" : "Download Wabbajack into its folder", &m.optDownload);
             ImGui::Dummy(ImVec2(0, 6));
             ImGui::PushStyleColor(ImGuiCol_Text, kAmber);
             ImGui::Checkbox("Clean the game folder to vanilla", &m.optClean);
@@ -992,7 +988,8 @@ void DrawChecklist(App& app) {
         ImVec2 center = ImGui::GetMainViewport()->GetCenter();
         ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
         ImGui::SetNextWindowSize(ImVec2(620, 0), ImGuiCond_Appearing);
-        if (ImGui::BeginPopupModal("run_summary", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        bool rsOpen = true;
+        if (ImGui::BeginPopupModal("Run summary###run_summary", &rsOpen, ImGuiWindowFlags_AlwaysAutoResize)) {
             int sumDone = 0, sumIssues = 0;
             for (auto& s : m.steps)
                 if (ZoneOf(s) == Zone::Auto && StepVisible(m, s)) { if (IsResolved(s.status)) ++sumDone; else ++sumIssues; }
@@ -1082,15 +1079,19 @@ void DrawChecklist(App& app) {
     int autoDone = 0, autoTotal = 0;
     for (auto& s : m.steps)
         if (ZoneOf(s) == Zone::Auto && StepVisible(m, s)) { ++autoTotal; if (IsResolved(s.status)) ++autoDone; }
+    int stepN = (m.mode == Mode::MO2) ? 2 : 1;
     char autoHdr[96];
-    std::snprintf(autoHdr, sizeof(autoHdr), "Step 2   -   We handle these  ( %d of %d done )###auto", autoDone, autoTotal);
+    std::snprintf(autoHdr, sizeof(autoHdr), "Step %d   -   We handle these  ( %d of %d done )###auto", stepN, autoDone, autoTotal);
 
     ImGui::Dummy(ImVec2(0, 2));
     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
     PushBold(); bool openAuto = ImGui::CollapsingHeader(autoHdr); PopBold();
-    InfoHint("Runtimes, tweaks, and the mod-manager download. \"Run all\" does them in one admin prompt, or run any one with its button. Green = done.");
     if (openAuto) {
-        ImGui::TextColored(kGray, "Hit \"Run all\" above, or run any single one with its button.");
+        ImGui::BeginDisabled(busy);
+        if (PrimaryButton(busy ? "Working..." : "Run all automatic steps", ImVec2(-1.0f, 40.0f))) s_openApplyAll = true;
+        ImGui::EndDisabled();
+        ImGui::TextColored(kGray, "One admin prompt runs the checked items, or run any single one with its own button below.");
+        ImGui::Dummy(ImVec2(0, 4));
         ImGui::BeginChild("autolist", ImVec2(0, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_Borders);
         bool firstAuto = true;
         for (auto& s : m.steps) {
@@ -1112,13 +1113,12 @@ void DrawChecklist(App& app) {
     for (auto& s : m.steps)
         if (ZoneOf(s) == Zone::Checks && StepVisible(m, s)) { if (!IsResolved(s.status)) ++checkIssues; }
     char checkHdr[96];
-    if (checkIssues > 0) std::snprintf(checkHdr, sizeof(checkHdr), "Step 3   -   Quick checks  ( %d need attention )###chk", checkIssues);
-    else std::snprintf(checkHdr, sizeof(checkHdr), "Step 3   -   Quick checks  ( all good )###chk");
+    if (checkIssues > 0) std::snprintf(checkHdr, sizeof(checkHdr), "Step %d   -   Quick checks  ( %d need attention )###chk", stepN + 1, checkIssues);
+    else std::snprintf(checkHdr, sizeof(checkHdr), "Step %d   -   Quick checks  ( all good )###chk", stepN + 1);
 
     ImGui::Dummy(ImVec2(0, 8));
     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
     PushBold(); bool openChk = ImGui::CollapsingHeader(checkHdr); PopBold();
-    InfoHint("Read-only checks of your PC + game. Anything amber has a button that takes you where to fix it - do that before installing the list.");
     if (openChk) {
         ImGui::TextColored(kGray, "We read these from your PC. Anything amber has a button that takes you where to fix it.");
         ImGui::BeginChild("checklist_checks", ImVec2(0, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_Borders);
@@ -1136,8 +1136,9 @@ void DrawChecklist(App& app) {
 
     ImGui::Dummy(ImVec2(0, 8));
     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-    PushBold(); bool openManual = ImGui::CollapsingHeader("Step 4   -   You do these  ( in the manager's own window )###manual"); PopBold();
-    InfoHint("Steps only you can do, in the manager's own window. The \"Manual guide\" button up top lists every step with links if you get stuck.");
+    char manualHdr[96];
+    std::snprintf(manualHdr, sizeof(manualHdr), "Step %d   -   You do these  ( in the manager's own window )###manual", stepN + 2);
+    PushBold(); bool openManual = ImGui::CollapsingHeader(manualHdr); PopBold();
     if (openManual) {
         ImGui::TextColored(kGray, "We can't do these for you - but here's exactly where to go.");
         ImGui::Dummy(ImVec2(0, 4));
@@ -1154,21 +1155,16 @@ void DrawChecklist(App& app) {
     {
         std::string logCopy;
         { std::lock_guard<std::mutex> lk(m.logMtx); logCopy = m.log; }
-        if (ImGui::Button("Copy log", ImVec2(110, 0))) ImGui::SetClipboardText(logCopy.c_str());
-        ImGui::SameLine();
-        if (ImGui::Button("Open log", ImVec2(110, 0))) {
-            wchar_t t[1024] = {};
-            DWORD n = ::GetTempPathW(1024, t);
-            OpenFolder(std::wstring(t, n));
-        }
-        ImGui::SameLine();
-        ImGui::BeginDisabled(busy || !JournalHasEntries());
-        if (ImGui::Button("Undo changes", ImVec2(130, 0))) Launch(app, [&m]() { UndoAll(m); });
-        ImGui::EndDisabled();
-        ImGui::SameLine();
-        ImGui::TextColored(kGray, "Each step shows its own status above. Full log at %%TEMP%%\\CyberpunkModlistSetup.log");
+        ImGui::TextColored(kGray, "Each step shows its own status above. Full log saved to %%TEMP%%\\CyberpunkModlistSetup.log");
         s_logOpen = ImGui::CollapsingHeader("Log output");
         if (s_logOpen) {
+            if (ImGui::Button("Copy log", ImVec2(110, 0))) ImGui::SetClipboardText(logCopy.c_str());
+            ImGui::SameLine();
+            if (ImGui::Button("Open log", ImVec2(110, 0))) {
+                wchar_t t[1024] = {};
+                DWORD n = ::GetTempPathW(1024, t);
+                OpenFolder(std::wstring(t, n));
+            }
             ImGui::BeginChild("log", ImVec2(0, 150.0f), ImGuiChildFlags_Borders, ImGuiWindowFlags_HorizontalScrollbar);
             ImGui::TextUnformatted(logCopy.c_str());
             if (busy) ImGui::SetScrollHereY(1.0f);
@@ -1184,8 +1180,8 @@ void DrawUI(App& app) {
     ImGuiStyle& st = ImGui::GetStyle();
     st.Colors[ImGuiCol_CheckMark]     = g_accent;
     st.Colors[ImGuiCol_PlotHistogram] = g_accent;
-    st.Colors[ImGuiCol_Header]        = ImVec4(g_accent.x, g_accent.y, g_accent.z, 0.22f);
-    st.Colors[ImGuiCol_HeaderHovered] = ImVec4(g_accent.x, g_accent.y, g_accent.z, 0.38f);
+    st.Colors[ImGuiCol_Header]        = ImVec4(g_accent.x, g_accent.y, g_accent.z, 0.30f);
+    st.Colors[ImGuiCol_HeaderHovered] = ImVec4(g_accent.x, g_accent.y, g_accent.z, 0.50f);
     st.Colors[ImGuiCol_Separator]     = ImVec4(g_accent.x, g_accent.y, g_accent.z, 0.22f);
     st.Colors[ImGuiCol_Border]        = ImVec4(g_accent.x, g_accent.y, g_accent.z, 0.16f);
 
@@ -1236,16 +1232,16 @@ int RunGui() {
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
     g_startupDpi = dpiScale;
-    ImFont* loaded = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 16.0f * dpiScale);
+    ImFont* loaded = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 20.0f * dpiScale);
     if (loaded) { io.FontGlobalScale = 1.0f; g_fontBase = 1.0f; }
     else { io.FontGlobalScale = kBaseFontScale * dpiScale; g_fontBase = kBaseFontScale * dpiScale; }
-    g_boldFont = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeuib.ttf", 16.0f * dpiScale);
+    g_boldFont = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeuib.ttf", 20.0f * dpiScale);
     ImGui::StyleColorsDark();
     ImGuiStyle& style = ImGui::GetStyle();
     style.WindowPadding   = ImVec2(22, 18);
     style.FramePadding    = ImVec2(11, 7);
-    style.ItemSpacing     = ImVec2(8, 8);
-    style.FrameRounding   = 6.0f;
+    style.ItemSpacing     = ImVec2(9, 11);
+    style.FrameRounding   = 4.0f;
     style.GrabRounding    = 6.0f;
     style.ChildRounding   = 8.0f;
     style.PopupRounding   = 8.0f;
@@ -1257,14 +1253,14 @@ int RunGui() {
     style.Colors[ImGuiCol_FrameBg]        = ImVec4(0.14f, 0.16f, 0.20f, 1.0f);
     style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(0.18f, 0.21f, 0.27f, 1.0f);
     style.Colors[ImGuiCol_FrameBgActive]  = ImVec4(0.20f, 0.24f, 0.31f, 1.0f);
-    style.Colors[ImGuiCol_Button]         = ImVec4(0.17f, 0.20f, 0.25f, 1.0f);
-    style.Colors[ImGuiCol_ButtonHovered]  = ImVec4(0.23f, 0.27f, 0.34f, 1.0f);
-    style.Colors[ImGuiCol_ButtonActive]   = ImVec4(0.27f, 0.32f, 0.40f, 1.0f);
-    style.Colors[ImGuiCol_Border]         = ImVec4(0.26f, 0.52f, 0.82f, 0.16f);
-    style.Colors[ImGuiCol_Separator]      = ImVec4(0.26f, 0.52f, 0.82f, 0.20f);
+    style.Colors[ImGuiCol_Button]         = ImVec4(0.16f, 0.44f, 0.74f, 1.0f);
+    style.Colors[ImGuiCol_ButtonHovered]  = ImVec4(0.22f, 0.54f, 0.88f, 1.0f);
+    style.Colors[ImGuiCol_ButtonActive]   = ImVec4(0.28f, 0.62f, 0.96f, 1.0f);
+    style.Colors[ImGuiCol_Border]         = ImVec4(0.30f, 0.58f, 0.90f, 0.32f);
+    style.Colors[ImGuiCol_Separator]      = ImVec4(0.30f, 0.58f, 0.90f, 0.36f);
     style.Colors[ImGuiCol_CheckMark]      = g_accent;
-    style.Colors[ImGuiCol_Header]         = ImVec4(0.16f, 0.64f, 0.98f, 0.22f);
-    style.Colors[ImGuiCol_HeaderHovered]  = ImVec4(0.16f, 0.64f, 0.98f, 0.36f);
+    style.Colors[ImGuiCol_Header]         = ImVec4(0.16f, 0.64f, 0.98f, 0.30f);
+    style.Colors[ImGuiCol_HeaderHovered]  = ImVec4(0.16f, 0.64f, 0.98f, 0.48f);
     style.Colors[ImGuiCol_PlotHistogram]  = g_accent;
     style.Colors[ImGuiCol_ScrollbarGrab]  = ImVec4(0.24f, 0.28f, 0.35f, 1.0f);
     ImGui_ImplWin32_Init(hwnd);

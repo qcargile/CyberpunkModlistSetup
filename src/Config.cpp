@@ -14,6 +14,7 @@ ListConfig ConfigForList(ListId id) noexcept {
         c.collectionUrl = "";
         c.gameVersion = "2.31a";
         c.requiresPhantomLiberty = true;
+        c.requiresRedmod = true;
         c.loaded = true;
     } else if (id == ListId::Wtnc) {
         c.name = "Welcome to Night City";
@@ -25,6 +26,7 @@ ListConfig ConfigForList(ListId id) noexcept {
         c.collectionUrl = "https://www.nexusmods.com/games/cyberpunk2077/collections/iszwwe";
         c.gameVersion = "2.31a";
         c.requiresPhantomLiberty = false;
+        c.requiresRedmod = false;
         c.loaded = true;
     }
     return c;

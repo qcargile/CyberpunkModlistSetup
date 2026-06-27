@@ -46,6 +46,7 @@ struct Model {
     std::wstring gameDir;
     char         installPath[1024]   = {};
     char         downloadsPath[1024] = {};
+    char         wjPath[1024]        = {};
 
     std::vector<Step> steps;
 
@@ -113,5 +114,6 @@ void InstallVortexCollection(Model& m);
 void InstallGpuApp(Model& m);
 void UndoAll(Model& m);
 void LaunchWabbajack(Model& m);
+void SendListToWabbajack(Model& m);
 
 }

@@ -27,6 +27,7 @@ struct ListConfig {
     std::string expectedBuildId;
     std::string gameVersion;
     bool        requiresPhantomLiberty = false;
+    bool        requiresRedmod = false;
     bool        loaded         = false;
 };
 

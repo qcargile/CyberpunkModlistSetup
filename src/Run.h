@@ -12,6 +12,8 @@ int RunPowerShellCapture(const std::wstring& psCommand, std::string& output, std
 
 void LaunchDetached(const std::wstring& exe) noexcept;
 
+void LaunchDetachedArgs(const std::wstring& exe, const std::wstring& args) noexcept;
+
 int RunElevatedSelf(const std::wstring& args, std::string& err) noexcept;
 
 bool IsElevated() noexcept;

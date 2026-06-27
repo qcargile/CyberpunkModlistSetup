@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 
 namespace fs = std::filesystem;
 using cleanslate::Widen;
@@ -38,6 +39,8 @@ const char*    kWjGallery = "https://www.wabbajack.org/gallery?game=cyberpunk207
 const char*    kVxCollections = "https://www.nexusmods.com/games/cyberpunk2077/collections?sort=downloads";
 
 std::wstring InstallW(const Model& m)   { return Widen(std::string(m.installPath)); }
+std::wstring WjW(const Model& m)        { return Widen(std::string(m.wjPath)); }
+std::wstring CheckRootW(const Model& m) { return (m.mode == Mode::MO2) ? WjW(m) : m.gameDir; }
 
 std::wstring ToolCacheDir() {
     wchar_t buf[1024];
@@ -124,6 +127,20 @@ bool VortexInstalled(std::wstring* outExe = nullptr) {
     return IsProcessRunning(L"Vortex.exe");
 }
 
+std::wstring ArgvQuote(const std::wstring& arg) {
+    if (!arg.empty() && arg.find_first_of(L" \t\n\v\"") == std::wstring::npos) return arg;
+    std::wstring s = L"\"";
+    for (auto it = arg.begin();; ++it) {
+        unsigned slashes = 0;
+        while (it != arg.end() && *it == L'\\') { ++it; ++slashes; }
+        if (it == arg.end()) { s.append(slashes * 2, L'\\'); break; }
+        if (*it == L'"') { s.append(slashes * 2 + 1, L'\\'); s.push_back(L'"'); }
+        else { s.append(slashes, L'\\'); s.push_back(*it); }
+    }
+    s.push_back(L'"');
+    return s;
+}
+
 bool WabbajackExeFromUri(std::wstring& out) {
     struct Cmd { HKEY root; const wchar_t* sub; };
     const Cmd cmds[] = {
@@ -157,11 +174,6 @@ bool WabbajackInstalled(const std::wstring& installDir, std::wstring* outExe = n
     }
     std::wstring uri;
     if (WabbajackExeFromUri(uri)) { if (outExe) *outExe = uri; return true; }
-    wchar_t buf[1024];
-    if (::ExpandEnvironmentStringsW(L"%LOCALAPPDATA%\\Wabbajack", buf, 1024) && buf[0] && fs::exists(fs::path(buf), ec)) {
-        if (outExe) outExe->clear();
-        return true;
-    }
     if (IsProcessRunning(L"Wabbajack.exe")) { if (outExe) outExe->clear(); return true; }
     return false;
 }
@@ -374,6 +386,7 @@ const char* VortexCollectionsUrl() { return kVxCollections; }
 
 bool StepVisible(const Model& m, const Step& s) {
     if (s.id == "phantomliberty" && !m.config.requiresPhantomLiberty) return false;
+    if (s.id == "redmod" && !m.config.requiresRedmod) return false;
     if (s.applies == Applies::Shared) return true;
     if (m.mode == Mode::MO2 && s.applies == Applies::MO2) return true;
     if (m.mode == Mode::Vortex && s.applies == Applies::Vortex) return true;
@@ -429,6 +442,9 @@ void LoadState(Model& m) {
         if (root["downloadsPath"].get(sv) == simdjson::SUCCESS && !sv.empty()) {
             std::string s(sv); strncpy_s(m.downloadsPath, s.c_str(), sizeof(m.downloadsPath) - 1);
         }
+        if (root["wjPath"].get(sv) == simdjson::SUCCESS && !sv.empty()) {
+            std::string s(sv); strncpy_s(m.wjPath, s.c_str(), sizeof(m.wjPath) - 1);
+        }
     } catch (...) {
     }
 }
@@ -448,6 +464,8 @@ void SaveState(Model& m) {
     cleanslate::JsonEsc(j, std::string(m.installPath));
     j += ",\n  \"downloadsPath\": ";
     cleanslate::JsonEsc(j, std::string(m.downloadsPath));
+    j += ",\n  \"wjPath\": ";
+    cleanslate::JsonEsc(j, std::string(m.wjPath));
     j += "\n}\n";
     std::ofstream f(fs::path(path), std::ios::binary | std::ios::trunc);
     if (f) f << j;
@@ -459,10 +477,10 @@ void SuggestPaths(Model& m) {
     if (drive.empty()) drive = L"C:\\";
     std::wstring inst = drive + L"ModlistInstall";
     std::wstring dl = drive + L"ModlistInstall\\downloads";
-    std::string instU = NarrowU8(inst);
-    std::string dlU = NarrowU8(dl);
-    strncpy_s(m.installPath, instU.c_str(), sizeof(m.installPath) - 1);
-    strncpy_s(m.downloadsPath, dlU.c_str(), sizeof(m.downloadsPath) - 1);
+    std::wstring wj = drive + L"Wabbajack";
+    strncpy_s(m.installPath, NarrowU8(inst).c_str(), sizeof(m.installPath) - 1);
+    strncpy_s(m.downloadsPath, NarrowU8(dl).c_str(), sizeof(m.downloadsPath) - 1);
+    strncpy_s(m.wjPath, NarrowU8(wj).c_str(), sizeof(m.wjPath) - 1);
 }
 
 void BuildCatalog(Model& m) {
@@ -483,7 +501,7 @@ void BuildCatalog(Model& m) {
         Group::Check, false, "", nullptr);
     add("redmod", "REDmod installed", "Free Steam DLC most lists require.",
         Group::Check, false, "Open the REDmod page in Steam and install it.", L"steam://install/2060310");
-    add("disk", "Free space for install + downloads", "The list needs room on the drive(s) you set for install and downloads below.",
+    add("disk", "Free space on the install drive", "The list needs free space on the drive it installs to.",
         Group::Check, false, "", nullptr);
     add("sync", "Install folder not in cloud sync", "OneDrive/Dropbox locks files mid-install and breaks the mod manager.",
         Group::Check, false, "", nullptr);
@@ -523,36 +541,38 @@ void BuildCatalog(Model& m) {
     add("m_gpu", "Update GPU drivers", "Latest NVIDIA App or AMD Adrenalin drivers.",
         Group::Manual, false, "Update through the NVIDIA App or AMD Adrenalin.", L"https://www.nvidia.com/software/nvidia-app/");
 
-    add("wabbajack", "Wabbajack", "Downloads the latest Wabbajack into your install folder.",
-        Group::Manager, true, "Download Wabbajack from wabbajack.org and put the exe in your install folder.",
+    add("wabbajack", "Wabbajack", "Downloads the latest Wabbajack into your Wabbajack folder.",
+        Group::Manager, true, "Download Wabbajack from wabbajack.org and put the exe in your Wabbajack folder.",
         L"https://www.wabbajack.org", Applies::MO2);
-    add("wj_findlist", "Find + install the list in Wabbajack", "Open the Cyberpunk gallery or this list's page, then install it in Wabbajack.",
+    add("wj_findlist", "Send the list to Wabbajack", "Opens Wabbajack on this list. Free Nexus accounts click each download; premium is hands-off.",
         Group::Manager, false,
-        "First launch Wabbajack and connect your Nexus account in Settings. Then Browse Lists - filter Cyberpunk 2077 "
-        "(tick Non-featured/NSFW if needed) - pick the list - set Install + Downloads to the folders above. "
-        "Reinstalling or coming from Vortex? Point Downloads at your old downloads folder to skip re-downloading everything. "
-        "Install, then open the install folder, run ModOrganizer.exe, pick your profile (top-left), and hit Run.", nullptr, Applies::MO2);
+        "In Wabbajack: pick the list, set your Install + Downloads folders, then Install.", nullptr, Applies::MO2);
 
     add("vortex", "Vortex", "Downloads and installs the latest Vortex.",
         Group::Manager, true, "Download Vortex from Nexus Mods and install it.", kVortexPg, Applies::Vortex);
-    add("vortex_hardlink", "Vortex deployment is Hardlink", "Read live from Vortex. Hardlink is required so mods deploy onto the game without copying.",
-        Group::Check, false,
-        "Vortex - Settings - Mods - Deployment Method - Hardlink Deployment.", nullptr, Applies::Vortex);
-    add("vortex_redmod", "Vortex: REDmod auto-convert off", "Turn off auto-converting archives to REDmods (set it in the app).",
-        Group::Manager, false,
-        "Vortex - Settings - V2077 Settings - turn off 'Automatically convert old style archive mods to REDmods'.", nullptr, Applies::Vortex);
-    add("vortex_extension", "Vortex Cyberpunk 2077 extension", "Read live from Vortex. The game extension is what lets Vortex manage Cyberpunk at all.",
-        Group::Check, false,
-        "When you Manage Cyberpunk 2077 in Vortex, it prompts you to download the game extension. Download it, then restart Vortex when asked.", nullptr, Applies::Vortex);
-    add("vortex_profile", "Vortex: manage game + fresh profile", "Manage Cyberpunk in Vortex, then make a clean profile for the collection.",
-        Group::Manager, false,
-        "Vortex - Dashboard - Select a game to manage - Cyberpunk 2077. Then Profiles tab - create a NEW profile "
-        "for the collection BEFORE installing. Switching from an existing setup? First remove old mods "
-        "(Mods tab, Ctrl+A, Remove - leave 'delete archives' unticked) and extra profiles, then run the clean above.", nullptr, Applies::Vortex);
-    add("vortex_collection", "Add + install the collection", "Open Vortex straight to this collection (Add to Vortex), or Browse to find it.",
-        Group::Manager, false,
-        "Add to Vortex opens it ready to install (or use Browse). In Vortex: pick your new profile - "
-        "Install Now. When it finishes: Mods tab - Deploy Mods - Play.", nullptr, Applies::Vortex);
+    add("vortex_extension", "Vortex: manage Cyberpunk + install the extension",
+        "First Vortex step. Managing the game installs its extension, Vortex restarts, and the game is managed.",
+        Group::Manual, false,
+        "In Vortex: Games - Cyberpunk 2077 - Manage. It prompts to download the game extension - install it and let Vortex restart. The game is now managed.", nullptr, Applies::Vortex);
+    add("vortex_redmod", "Vortex: V2077 Settings (two toggles off)",
+        "Under Cyberpunk's Preferences in Vortex. Both default to off, so usually just confirm.",
+        Group::Manual, false,
+        "Cyberpunk 2077 - Preferences - V2077 Settings: turn OFF 'Automatically convert legacy archive mods to REDmods' and 'Don't prompt when reaching the fallback installer'.", nullptr, Applies::Vortex);
+    add("vortex_staging", "Vortex: Mod Staging Folder",
+        "Point Vortex's staging folder at a folder OUTSIDE the Vortex app folder, on the same drive as the game. Read live from Vortex.",
+        Group::Manual, false,
+        "Preferences - Mods - set Mod Staging Folder to your step-1 Mod Staging folder, then Apply. It can't be inside the Vortex application folder.", nullptr, Applies::Vortex);
+    add("vortex_hardlink", "Vortex: Deployment Method = Hardlink",
+        "Set Vortex's Deployment Method to Hardlink. Read live from Vortex.",
+        Group::Manual, false,
+        "Preferences - Mods - Deployment Method - Hardlink Deployment, then Apply.", nullptr, Applies::Vortex);
+    add("vortex_profile", "Vortex: create + enable a profile",
+        "A clean profile for the collection, then enable it.",
+        Group::Manual, false,
+        "Profiles tab - Add Cyberpunk 2077 profile - give it a name, Save. Then hit ENABLE on the profile you just made so Vortex switches to it.", nullptr, Applies::Vortex);
+    add("vortex_collection", "Vortex: add + install the collection", "Open Vortex straight to this collection (Add to Vortex), or Browse to find it.",
+        Group::Manual, false,
+        "Add to Vortex opens it ready to install (or use Browse). In Vortex: Install Now. When it finishes: Mods tab - Deploy Mods - Play.", nullptr, Applies::Vortex);
 
     if (!m.config.collectionUrl.empty()) {
         if (Step* s = Find(m, "vortex_collection")) s->url = m.config.collectionUrl;
@@ -634,8 +654,8 @@ void DetectAll(Model& m) {
     }
 
     if (Step* s = Find(m, "disk")) {
-        std::wstring instPath = InstallW(m);
-        std::wstring dlPath = Widen(std::string(m.downloadsPath));
+        std::wstring instPath = CheckRootW(m);
+        std::wstring dlPath = (m.mode == Mode::MO2) ? instPath : Widen(std::string(m.downloadsPath));
         std::wstring instRoot = DriveRootOf(instPath);
         uint64_t instFree = FreeBytesOnDrive(instPath);
         std::string need = std::to_string(m.config.requiredGB) + " GB";
@@ -657,13 +677,13 @@ void DetectAll(Model& m) {
     }
 
     if (Step* s = Find(m, "sync")) {
-        if (PathUnderCloudSync(InstallW(m))) { s->status = Status::Warning; s->statusText = "install path is inside a cloud-synced folder"; }
+        if (PathUnderCloudSync(CheckRootW(m))) { s->status = Status::Warning; s->statusText = "this folder is inside a cloud-synced folder"; }
         else { s->status = Status::OK; s->statusText = "not in OneDrive/Dropbox"; }
     }
 
     if (Step* s = Find(m, "writeperm")) {
-        if (PathUnderProgramFiles(InstallW(m))) { s->status = Status::Warning; s->statusText = "inside Program Files - pick a folder outside it (e.g. on another drive)"; }
-        else if (!DirWritable(InstallW(m))) { s->status = Status::Warning; s->statusText = "the install folder isn't writable - pick a different location"; }
+        if (PathUnderProgramFiles(CheckRootW(m))) { s->status = Status::Warning; s->statusText = "inside Program Files - pick a folder outside it (e.g. on another drive)"; }
+        else if (!DirWritable(CheckRootW(m))) { s->status = Status::Warning; s->statusText = "this folder isn't writable - pick a different location"; }
         else { s->status = Status::OK; s->statusText = "writable, outside Program Files"; }
     }
 
@@ -732,12 +752,12 @@ void DetectAll(Model& m) {
     }
 
     if (Step* s = Find(m, "wabbajack")) {
-        if (m.wabbajackReady || WabbajackInstalled(InstallW(m), &m.wabbajackExe)) {
+        if (m.wabbajackReady || WabbajackInstalled(WjW(m), &m.wabbajackExe)) {
             m.wabbajackReady = true;
             s->status = Status::Done;
-            std::wstring instExe = (fs::path(InstallW(m)) / L"Wabbajack.exe").wstring();
-            bool inInstall = !m.wabbajackExe.empty() && lstrcmpiW(m.wabbajackExe.c_str(), instExe.c_str()) == 0;
-            s->statusText = inInstall ? "in your install folder"
+            std::wstring wjExe = (fs::path(WjW(m)) / L"Wabbajack.exe").wstring();
+            bool inWjFolder = !m.wabbajackExe.empty() && lstrcmpiW(m.wabbajackExe.c_str(), wjExe.c_str()) == 0;
+            s->statusText = inWjFolder ? "in your Wabbajack folder"
                           : m.wabbajackExe.empty() ? "found on this PC"
                           : ("found - " + NarrowU8(m.wabbajackExe));
         } else { s->status = Status::Missing; s->statusText = "not downloaded yet"; }
@@ -748,39 +768,38 @@ void DetectAll(Model& m) {
         else { s->status = Status::Missing; s->statusText = "not installed yet"; }
     }
 
-    if (Step* s = Find(m, "vortex_profile")) {
-        int pc = VortexProfileCount();
-        if (pc > 1) s->statusText = std::to_string(pc) + " Vortex profiles - put the collection on its own";
-        else if (pc == 1) s->statusText = "1 Vortex profile";
-        else s->statusText = "";
-    }
-
     if (Step* s = Find(m, "vortex_extension")) {
-        if (VortexCyberpunkExtension()) { s->status = Status::Done; s->statusText = "extension installed"; }
-        else { s->status = Status::Manual; s->statusText = "Manage Cyberpunk in Vortex - it prompts to download the extension"; }
+        if (VortexCyberpunkExtension()) { s->status = Status::Done; s->statusText = "game managed - extension installed"; }
+        else { s->status = Status::Manual; s->statusText = "manage the game - Vortex prompts for the extension, then restarts"; }
     }
 
-    if (Step* s = Find(m, "vortex_hardlink")) {
+    {
         VortexCpSettings vs = ReadVortexCpSettings();
-        if (vs.deployMethod == "hardlink_activator") {
-            bool crossDrive = !vs.stagingPath.empty() && !m.gameDir.empty() && !SameDrive(vs.stagingPath, m.gameDir);
-            if (crossDrive) {
+        if (Step* s = Find(m, "vortex_staging")) {
+            if (vs.stagingPath.empty()) { s->status = Status::Manual; s->statusText = "in Vortex, make sure the Mod Staging Folder is set - outside the Vortex app folder, same drive as the game"; }
+            else if (!m.gameDir.empty() && !SameDrive(vs.stagingPath, m.gameDir)) {
                 s->status = Status::Warning;
-                s->statusText = "Hardlink set, but staging " + vs.stagingPath + " is on a different drive than the game - hardlinks need the same drive";
-            } else {
-                s->status = Status::Done;
-                s->statusText = vs.stagingPath.empty() ? "Hardlink deployment" : "Hardlink deployment - staging " + vs.stagingPath;
-            }
-        } else if (!vs.deployMethod.empty()) {
-            s->status = Status::Warning;
-            s->statusText = "currently " + PrettyDeployMethod(vs.deployMethod) + " - set Deployment Method to Hardlink";
-        } else {
-            s->status = Status::Manual;
-            s->statusText = "set Deployment Method to Hardlink in Vortex";
+                s->statusText = "staging " + vs.stagingPath + " is on a different drive than the game - hardlinks need the same drive";
+            } else { s->status = Status::Done; s->statusText = "staging " + vs.stagingPath; }
+        }
+        if (Step* s = Find(m, "vortex_hardlink")) {
+            if (vs.deployMethod == "hardlink_activator") { s->status = Status::Done; s->statusText = "Hardlink deployment"; }
+            else if (!vs.deployMethod.empty()) { s->status = Status::Warning; s->statusText = "currently " + PrettyDeployMethod(vs.deployMethod) + " - set it to Hardlink"; }
+            else { s->status = Status::Manual; s->statusText = "in Vortex, make sure Deployment Method is set to Hardlink"; }
         }
     }
 
-    for (const char* id : { "vortex_redmod", "vortex_profile", "vortex_collection", "wj_findlist" }) {
+    if (Step* s = Find(m, "vortex_redmod")) {
+        s->status = Status::OK;
+        s->statusText = "both V2077 toggles default to off - just confirm under Cyberpunk's Preferences";
+    }
+
+    if (Step* s = Find(m, "vortex_profile")) {
+        int pc = VortexProfileCount();
+        s->statusText = pc >= 1 ? (std::to_string(pc) + " profile(s) found - make sure yours is created + enabled") : "";
+    }
+
+    for (const char* id : { "vortex_profile", "vortex_collection", "wj_findlist" }) {
         if (Step* s = Find(m, id)) { if (s->status != Status::Done) s->status = Status::Manual; }
     }
 
@@ -986,8 +1005,8 @@ void DownloadWabbajack(Model& m) {
     Step* s = Find(m, "wabbajack");
     if (s) s->status = Status::Working;
     std::error_code ec;
-    fs::create_directories(fs::path(InstallW(m)), ec);
-    std::wstring dest = (fs::path(InstallW(m)) / L"Wabbajack.exe").wstring();
+    fs::create_directories(fs::path(WjW(m)), ec);
+    std::wstring dest = (fs::path(WjW(m)) / L"Wabbajack.exe").wstring();
     SetLabel(m, "Downloading Wabbajack");
     Append(m, "Downloading the latest Wabbajack...");
     m.dlDone = 0;
@@ -999,9 +1018,51 @@ void DownloadWabbajack(Model& m) {
         if (s) s->status = Status::Failed;
         return;
     }
-    Append(m, "  Done: Wabbajack downloaded to your install folder.");
+    Append(m, "  Done: Wabbajack downloaded to your Wabbajack folder.");
     m.wabbajackReady = true;
     if (s) s->status = Status::Done;
+}
+
+void SendListToWabbajack(Model& m) {
+    const std::string pfx = "https://www.wabbajack.org/search/";
+    std::string machineUrl = (m.config.wabbajackUrl.rfind(pfx, 0) == 0) ? m.config.wabbajackUrl.substr(pfx.size()) : std::string();
+    if (machineUrl.empty()) {
+        Append(m, "This list has no Wabbajack machine URL configured - opening the gallery so you can find it.");
+        OpenUrl(Widen(std::string(WabbajackGalleryUrl())));
+        return;
+    }
+
+    std::error_code ec;
+    std::wstring wjExe;
+    std::wstring inFolder = (fs::path(WjW(m)) / L"Wabbajack.exe").wstring();
+    if (fs::exists(fs::path(inFolder), ec)) wjExe = inFolder;
+    else if (WabbajackInstalled(WjW(m), &m.wabbajackExe) && !m.wabbajackExe.empty() && fs::exists(fs::path(m.wabbajackExe), ec)) wjExe = m.wabbajackExe;
+
+    if (wjExe.empty()) {
+        Append(m, "Wabbajack isn't installed yet - download it with the button in step 2, then send the list.");
+        return;
+    }
+
+    std::wstring dir = fs::path(wjExe).parent_path().wstring();
+    std::wstring cli;
+    for (const wchar_t* name : { L"Wabbajack CLI.exe", L"Wabbajack-CLI.exe", L"wabbajack-cli.exe" }) {
+        std::wstring c = (fs::path(dir) / name).wstring();
+        if (fs::exists(fs::path(c), ec)) { cli = c; break; }
+    }
+
+    if (!cli.empty()) {
+        std::wstring dlDir = Widen(std::string(m.downloadsPath));
+        fs::create_directories(fs::path(InstallW(m)), ec);
+        fs::create_directories(fs::path(dlDir), ec);
+        std::wstring args = L"install -m " + ArgvQuote(Widen(machineUrl))
+            + L" -o " + ArgvQuote(InstallW(m)) + L" -d " + ArgvQuote(dlDir);
+        Append(m, "Starting Wabbajack on " + machineUrl + " with your folders preset. Premium Nexus is hands-off; free accounts click each download.");
+        LaunchDetachedArgs(cli, args);
+        return;
+    }
+
+    LaunchDetachedArgs(wjExe, ArgvQuote(Widen("wabbajack://" + machineUrl)));
+    Append(m, "Opening Wabbajack on " + machineUrl + " - set Install + Downloads to your folders above, then Install.");
 }
 
 void DownloadVortex(Model& m) {
@@ -1169,7 +1230,7 @@ void LaunchWabbajack(Model& m) {
     std::error_code ec;
     std::wstring exe = m.wabbajackExe;
     if (exe.empty() || !fs::exists(fs::path(exe), ec))
-        exe = (fs::path(InstallW(m)) / L"Wabbajack.exe").wstring();
+        exe = (fs::path(WjW(m)) / L"Wabbajack.exe").wstring();
     if (!fs::exists(fs::path(exe), ec)) return;
     if (!VerifyInstaller(m, exe, nullptr)) {
         Append(m, "  Not launching it - download a fresh copy from wabbajack.org.");
