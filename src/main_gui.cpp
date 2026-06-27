@@ -204,6 +204,29 @@ bool IsResolved(Status st) {
     return st == Status::OK || st == Status::Done || st == Status::Working;
 }
 
+bool UserMarked(Model& m, const std::string& id) {
+    for (auto& d : m.userDone) if (d == id) return true;
+    return false;
+}
+void ToggleUserMark(Model& m, const std::string& id) {
+    for (size_t i = 0; i < m.userDone.size(); ++i)
+        if (m.userDone[i] == id) { m.userDone.erase(m.userDone.begin() + i); SaveState(m); return; }
+    m.userDone.push_back(id);
+    SaveState(m);
+}
+void ClickableDot(Model& m, const Step& s, bool done) {
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    float h = ImGui::GetTextLineHeight();
+    ImGui::InvisibleButton("##mark", ImVec2(18.0f, h));
+    if (ImGui::IsItemClicked()) ToggleUserMark(m, s.id);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip(done ? "Done - click to unmark" : "Click to mark this done once you've finished it");
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 c(p.x + 7.0f, p.y + h * 0.5f);
+    if (done) dl->AddCircleFilled(c, 7.0f, ImGui::ColorConvertFloat4ToU32(kGreen));
+    else      dl->AddCircle(c, 7.0f, IM_COL32(135, 135, 145, 255), 0, 2.0f);
+    ImGui::SameLine(0.0f, 7.0f);
+}
+
 enum class Zone { Checks, Auto, Clean, Manual };
 
 Zone ZoneOf(const Step& s) {
@@ -416,7 +439,8 @@ void DrawManualRow(App& app, Step& s, int num) {
     bool busy = m.busy.load();
     float ww = RowRightEdge();
 
-    StatusDot(s.status);
+    bool done = IsResolved(s.status) || UserMarked(m, s.id);
+    ClickableDot(m, s, done);
     ImGui::TextColored(g_accent, "%d.", num);
     ImGui::SameLine(0.0f, 8.0f);
     PushBold(); ImGui::TextUnformatted(s.title.c_str()); PopBold();
@@ -462,7 +486,7 @@ void DrawManualRow(App& app, Step& s, int num) {
     if (!s.statusText.empty()) {
         ImGui::Indent(22.0f);
         ImGui::PushTextWrapPos(ww - 40.0f);
-        ImGui::TextColored(IsResolved(s.status) ? kGreen : kAmber, "%s", s.statusText.c_str());
+        ImGui::TextColored(done ? kGreen : kAmber, "%s", s.statusText.c_str());
         ImGui::PopTextWrapPos();
         ImGui::Unindent(22.0f);
     }
@@ -1031,8 +1055,8 @@ void DrawChecklist(App& app) {
             if (m.mode == Mode::MO2 && m.wabbajackReady) {
                 if (PrimaryButton("Open Wabbajack", ImVec2(180, 36))) { LaunchWabbajack(m); ImGui::CloseCurrentPopup(); }
                 hasNext = true;
-            } else if (m.mode == Mode::Vortex && m.vortexReady && !m.config.collectionUrl.empty()) {
-                if (PrimaryButton("Add to Vortex", ImVec2(180, 36))) { Launch(app, [&m]() { InstallVortexCollection(m); }); ImGui::CloseCurrentPopup(); }
+            } else if (m.mode == Mode::Vortex && !m.vortexExe.empty()) {
+                if (PrimaryButton("Open Vortex", ImVec2(180, 36))) { OpenUrl(m.vortexExe); ImGui::CloseCurrentPopup(); }
                 hasNext = true;
             }
             if (hasNext) ImGui::SameLine();
@@ -1088,7 +1112,13 @@ void DrawChecklist(App& app) {
     PushBold(); bool openAuto = ImGui::CollapsingHeader(autoHdr); PopBold();
     if (openAuto) {
         ImGui::BeginDisabled(busy);
-        if (PrimaryButton(busy ? "Working..." : "Run all automatic steps", ImVec2(-1.0f, 40.0f))) s_openApplyAll = true;
+        PushBold();
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.15f, 0.62f, 0.35f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.72f, 0.42f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.24f, 0.78f, 0.47f, 1.0f));
+        if (ImGui::Button(busy ? "Working..." : "Run all automatic steps", ImVec2(-1.0f, 48.0f))) s_openApplyAll = true;
+        ImGui::PopStyleColor(3);
+        PopBold();
         ImGui::EndDisabled();
         ImGui::TextColored(kGray, "One admin prompt runs the checked items, or run any single one with its own button below.");
         ImGui::Dummy(ImVec2(0, 4));
@@ -1136,11 +1166,15 @@ void DrawChecklist(App& app) {
 
     ImGui::Dummy(ImVec2(0, 8));
     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+    int manDone = 0, manTotal = 0;
+    for (auto& s : m.steps)
+        if (ZoneOf(s) == Zone::Manual && StepVisible(m, s)) { ++manTotal; if (IsResolved(s.status) || UserMarked(m, s.id)) ++manDone; }
     char manualHdr[96];
-    std::snprintf(manualHdr, sizeof(manualHdr), "Step %d   -   You do these  ( in the manager's own window )###manual", stepN + 2);
+    std::snprintf(manualHdr, sizeof(manualHdr), "Step %d   -   You do these  ( %d of %d done )###manual", stepN + 2, manDone, manTotal);
     PushBold(); bool openManual = ImGui::CollapsingHeader(manualHdr); PopBold();
     if (openManual) {
         ImGui::TextColored(kGray, "We can't do these for you - but here's exactly where to go.");
+        ImGui::TextColored(kGray, "Click a step's circle to mark it green once you've done it.");
         ImGui::Dummy(ImVec2(0, 4));
         int num = 0;
         for (auto& s : m.steps) {

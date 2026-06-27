@@ -47,6 +47,7 @@ struct Model {
     char         installPath[1024]   = {};
     char         downloadsPath[1024] = {};
     char         wjPath[1024]        = {};
+    std::vector<std::string> userDone;
 
     std::vector<Step> steps;
 

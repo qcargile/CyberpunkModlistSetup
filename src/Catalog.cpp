@@ -445,6 +445,11 @@ void LoadState(Model& m) {
         if (root["wjPath"].get(sv) == simdjson::SUCCESS && !sv.empty()) {
             std::string s(sv); strncpy_s(m.wjPath, s.c_str(), sizeof(m.wjPath) - 1);
         }
+        simdjson::dom::array arr;
+        if (root["userDone"].get(arr) == simdjson::SUCCESS) {
+            m.userDone.clear();
+            for (auto e : arr) { std::string_view ev; if (e.get(ev) == simdjson::SUCCESS) m.userDone.push_back(std::string(ev)); }
+        }
     } catch (...) {
     }
 }
@@ -466,6 +471,9 @@ void SaveState(Model& m) {
     cleanslate::JsonEsc(j, std::string(m.downloadsPath));
     j += ",\n  \"wjPath\": ";
     cleanslate::JsonEsc(j, std::string(m.wjPath));
+    j += ",\n  \"userDone\": [";
+    for (size_t i = 0; i < m.userDone.size(); ++i) { if (i) j += ", "; cleanslate::JsonEsc(j, m.userDone[i]); }
+    j += "]";
     j += "\n}\n";
     std::ofstream f(fs::path(path), std::ios::binary | std::ios::trunc);
     if (f) f << j;
