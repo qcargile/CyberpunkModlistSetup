@@ -227,6 +227,15 @@ void ClickableDot(Model& m, const Step& s, bool done) {
     ImGui::SameLine(0.0f, 7.0f);
 }
 
+void AutoCollapseWhenDone(bool fullyDone, bool& wasDone) {
+    if (fullyDone != wasDone) {
+        ImGui::SetNextItemOpen(!fullyDone, ImGuiCond_Always);
+        wasDone = fullyDone;
+    } else {
+        ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+    }
+}
+
 enum class Zone { Checks, Auto, Clean, Manual };
 
 Zone ZoneOf(const Step& s) {
@@ -1000,6 +1009,8 @@ void DrawChecklist(App& app) {
             ImGui::Checkbox("Clean the game folder to vanilla", &m.optClean);
             ImGui::PopStyleColor();
             ImGui::TextColored(kDim, "Off by default. Moves leftover mod files to a reversible backup - nothing is deleted.");
+            ImGui::Dummy(ImVec2(0, 10));
+            ImGui::TextColored(kAmber, "This can take a few minutes - the runtime installers and the download are the slow parts. Leave it running; progress shows up top.");
             ImGui::Dummy(ImVec2(0, 8));
             if (ImGui::Button("Apply selected", ImVec2(140, 0))) { Launch(app, [&m]() { RunAllAuto(m); }); ImGui::CloseCurrentPopup(); }
             ImGui::SameLine();
@@ -1108,7 +1119,8 @@ void DrawChecklist(App& app) {
     std::snprintf(autoHdr, sizeof(autoHdr), "Step %d   -   We handle these  ( %d of %d done )###auto", stepN, autoDone, autoTotal);
 
     ImGui::Dummy(ImVec2(0, 2));
-    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+    static bool s_autoWasDone = false;
+    AutoCollapseWhenDone(autoTotal > 0 && autoDone == autoTotal, s_autoWasDone);
     PushBold(); bool openAuto = ImGui::CollapsingHeader(autoHdr); PopBold();
     if (openAuto) {
         ImGui::BeginDisabled(busy);
@@ -1120,7 +1132,7 @@ void DrawChecklist(App& app) {
         ImGui::PopStyleColor(3);
         PopBold();
         ImGui::EndDisabled();
-        ImGui::TextColored(kGray, "One admin prompt runs the checked items, or run any single one with its own button below.");
+        ImGui::TextColored(kGray, "One admin prompt runs the checked items - this can take a few minutes. Or run any single one with its own button below.");
         ImGui::Dummy(ImVec2(0, 4));
         ImGui::BeginChild("autolist", ImVec2(0, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_Borders);
         bool firstAuto = true;
@@ -1147,7 +1159,8 @@ void DrawChecklist(App& app) {
     else std::snprintf(checkHdr, sizeof(checkHdr), "Step %d   -   Quick checks  ( all good )###chk", stepN + 1);
 
     ImGui::Dummy(ImVec2(0, 8));
-    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+    static bool s_chkWasDone = false;
+    AutoCollapseWhenDone(checkIssues == 0, s_chkWasDone);
     PushBold(); bool openChk = ImGui::CollapsingHeader(checkHdr); PopBold();
     if (openChk) {
         ImGui::TextColored(kGray, "We read these from your PC. Anything amber has a button that takes you where to fix it.");
@@ -1165,12 +1178,13 @@ void DrawChecklist(App& app) {
     }
 
     ImGui::Dummy(ImVec2(0, 8));
-    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
     int manDone = 0, manTotal = 0;
     for (auto& s : m.steps)
         if (ZoneOf(s) == Zone::Manual && StepVisible(m, s)) { ++manTotal; if (IsResolved(s.status) || UserMarked(m, s.id)) ++manDone; }
     char manualHdr[96];
     std::snprintf(manualHdr, sizeof(manualHdr), "Step %d   -   You do these  ( %d of %d done )###manual", stepN + 2, manDone, manTotal);
+    static bool s_manWasDone = false;
+    AutoCollapseWhenDone(manTotal > 0 && manDone == manTotal, s_manWasDone);
     PushBold(); bool openManual = ImGui::CollapsingHeader(manualHdr); PopBold();
     if (openManual) {
         ImGui::TextColored(kGray, "We can't do these for you - but here's exactly where to go.");
