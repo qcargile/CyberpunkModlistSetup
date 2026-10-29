@@ -1,0 +1,139 @@
+{
+  "schemaVersion": 1,
+  "manager": "Vortex",
+  "gameDir": "<GAME_ROOT>",
+  "dirs": 12,
+  "files": 14,
+  "items": [
+    {
+      "relPath": "archive\\pc\\mod",
+      "isDir": true,
+      "reason": "mod archives - not in a clean install"
+    },
+    {
+      "relPath": "red4ext",
+      "isDir": true,
+      "reason": "RED4ext framework + plugins - not in a clean install"
+    },
+    {
+      "relPath": "bin\\x64\\plugins",
+      "isDir": true,
+      "reason": "ASI / CET / RED4ext plugins - not in a clean install"
+    },
+    {
+      "relPath": "r6\\scripts",
+      "isDir": true,
+      "reason": "RedScript mods - not in a clean install"
+    },
+    {
+      "relPath": "r6\\tweaks",
+      "isDir": true,
+      "reason": "TweakXL mods - not in a clean install"
+    },
+    {
+      "relPath": "r6\\storages",
+      "isDir": true,
+      "reason": "mod storage - not in a clean install"
+    },
+    {
+      "relPath": "r6\\audioware",
+      "isDir": true,
+      "reason": "Audioware mods - not in a clean install"
+    },
+    {
+      "relPath": "mods\\ParityRedmod",
+      "isDir": true,
+      "reason": "installed REDmod mod - not in a clean install"
+    },
+    {
+      "relPath": "V2077",
+      "isDir": true,
+      "reason": "Vortex footprint (load order) - not in a clean install"
+    },
+    {
+      "relPath": "vortex.deployment.json",
+      "isDir": false,
+      "reason": "Vortex deployment manifest - not in a clean install"
+    },
+    {
+      "relPath": "bin\\x64\\winmm.dll",
+      "isDir": false,
+      "reason": "mod loader proxy - not in a clean install"
+    },
+    {
+      "relPath": "bin\\x64\\version.dll",
+      "isDir": false,
+      "reason": "mod loader proxy - not in a clean install"
+    },
+    {
+      "relPath": "bin\\x64\\d3d11.dll",
+      "isDir": false,
+      "reason": "mod loader proxy - not in a clean install"
+    },
+    {
+      "relPath": "bin\\x64\\powrprof.dll",
+      "isDir": false,
+      "reason": "mod loader proxy - not in a clean install"
+    },
+    {
+      "relPath": "bin\\x64\\dxgi.dll",
+      "isDir": false,
+      "reason": "ReShade proxy - not in a clean install"
+    },
+    {
+      "relPath": "bin\\x64\\opengl32.dll",
+      "isDir": false,
+      "reason": "ReShade/ENB proxy - not in a clean install"
+    },
+    {
+      "relPath": "bin\\x64\\ReShade.ini",
+      "isDir": false,
+      "reason": "ReShade config - not in a clean install"
+    },
+    {
+      "relPath": "bin\\x64\\ReShadePreset.ini",
+      "isDir": false,
+      "reason": "ReShade preset - not in a clean install"
+    },
+    {
+      "relPath": "bin\\x64\\reshade-shaders",
+      "isDir": true,
+      "reason": "ReShade shaders - not in a clean install"
+    },
+    {
+      "relPath": "bin\\x64\\reshade-presets",
+      "isDir": true,
+      "reason": "ReShade presets - not in a clean install"
+    },
+    {
+      "relPath": "bin\\x64\\enbseries",
+      "isDir": true,
+      "reason": "ENB - not in a clean install"
+    },
+    {
+      "relPath": "bin\\x64\\enblocal.ini",
+      "isDir": false,
+      "reason": "ENB config - not in a clean install"
+    },
+    {
+      "relPath": "bin\\x64\\enbseries.ini",
+      "isDir": false,
+      "reason": "ENB config - not in a clean install"
+    },
+    {
+      "relPath": "bin\\x64\\enbhost.exe",
+      "isDir": false,
+      "reason": "ENB host - not in a clean install"
+    },
+    {
+      "relPath": "bin\\x64\\d3dcompiler_46e.dll",
+      "isDir": false,
+      "reason": "ENB shader compiler - not in a clean install"
+    },
+    {
+      "relPath": "engine\\config\\platform\\pc\\parity.ini",
+      "isDir": false,
+      "reason": "config override - not in a clean install"
+    }
+  ]
+}

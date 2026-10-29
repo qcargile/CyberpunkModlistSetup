@@ -1,0 +1,34 @@
+<Window x:Class="ConflictStudio.App.SourceEditorSettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Source editor" Width="620" Height="330" MinWidth="520" MinHeight="300"
+        WindowStartupLocation="CenterOwner" ResizeMode="CanResizeWithGrip"
+        Background="#070B0F" Foreground="#F2F6F7" FontFamily="Segoe UI">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <TextBlock Foreground="#00F0FF" FontSize="18" FontWeight="SemiBold" Text="Open source at its recorded line" />
+        <StackPanel Grid.Row="1" Margin="0,18,0,0">
+            <TextBlock Foreground="#8EA2AD" Text="EDITOR" />
+            <ComboBox x:Name="EditorKindComboBox" Margin="0,6,0,0" SelectionChanged="EditorKindChanged" AutomationProperties.Name="Source editor choice" />
+        </StackPanel>
+        <Grid Grid.Row="2" Margin="0,16,0,0">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+            <StackPanel>
+                <TextBlock Foreground="#8EA2AD" Text="EDITOR EXECUTABLE" />
+                <TextBox x:Name="EditorExecutableTextBox" Margin="0,6,8,0" MinHeight="30" VerticalContentAlignment="Center" AutomationProperties.Name="Editor executable path" />
+            </StackPanel>
+            <Button x:Name="BrowseEditorButton" Grid.Column="1" Margin="0,23,0,0" Padding="16,6" Click="BrowseEditorClicked" Content="Browse..." />
+        </Grid>
+        <TextBlock x:Name="EditorSettingsStatusTextBlock" Grid.Row="3" Margin="0,14,0,0" Foreground="#FFD884" TextWrapping="Wrap" Text="Normal open uses the editor registered with Windows and cannot select a recorded line." />
+        <StackPanel Grid.Row="4" Margin="0,18,0,0" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Padding="18,7" Click="CancelClicked" Content="Cancel" IsCancel="True" />
+            <Button x:Name="SaveEditorButton" Margin="9,0,0,0" Padding="18,7" Click="SaveClicked" Content="Save" IsDefault="True" />
+        </StackPanel>
+    </Grid>
+</Window>

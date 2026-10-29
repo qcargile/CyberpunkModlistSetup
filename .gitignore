@@ -1,0 +1,13 @@
+build/
+dist/
+vcpkg_installed/
+.manual-github
+.worktrees/
+*.user
+*.obj
+*.pdb
+**/bin/
+**/obj/
+**/TestResults/
+docs/design/
+docs/evidence/

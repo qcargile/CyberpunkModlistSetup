@@ -1,0 +1,12 @@
+<Project Sdk="MSTest.Sdk/4.3.3">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+  <ItemGroup>
+    <Using Include="System.IO" />
+    <ProjectReference Include="../../src/ChromeBlood.Core/ChromeBlood.Core.csproj" />
+    <ProjectReference Include="../../src/ChromeBlood.Setup/ChromeBlood.Setup.csproj" />
+    <Compile Include="../ChromeBlood.Testing/TemporaryDirectory.cs" Link="TemporaryDirectory.cs" />
+  </ItemGroup>
+</Project>

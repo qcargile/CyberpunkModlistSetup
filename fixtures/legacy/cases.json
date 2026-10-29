@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "legacyCommit": "6f46ce200348b8d2f4cc281109cd9fc20490ab36",
+  "cases": [
+    {
+      "id": "full-clean",
+      "command": "fullClean",
+      "expectedFile": "full-clean.json",
+      "sha256": "15d2884c429e9a9dec6d1d62e888d7c64615a8c621abe85e4ea697b743291ebe"
+    }
+  ]
+}

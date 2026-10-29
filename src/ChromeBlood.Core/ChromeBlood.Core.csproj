@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../ChromeBlood.Contracts/ChromeBlood.Contracts.csproj" />
+    <InternalsVisibleTo Include="ChromeBlood.Setup.Tests" />
+    <EmbeddedResource Include="../../fixtures/legacy/cases.json" LogicalName="ChromeBlood.Cleanup.cases.json" />
+    <EmbeddedResource Include="../../fixtures/legacy/full-clean.json" LogicalName="ChromeBlood.Cleanup.full-clean.json" />
+    <EmbeddedResource Include="../../fixtures/vanilla/steam-2.5.json" LogicalName="ChromeBlood.Vanilla.steam-2.5.json" />
+  </ItemGroup>
+</Project>

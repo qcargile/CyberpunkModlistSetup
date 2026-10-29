@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="src/ChromeBlood.Contracts/ChromeBlood.Contracts.csproj" />
+  <Project Path="src/ChromeBlood.Core/ChromeBlood.Core.csproj" />
+  <Project Path="src/ChromeBlood.Presentation/ChromeBlood.Presentation.csproj" />
+  <Project Path="src/ChromeBlood.Setup/ChromeBlood.Setup.csproj" />
+  <Project Path="tests/ChromeBlood.Setup.Tests/ChromeBlood.Setup.Tests.csproj" />
+</Solution>

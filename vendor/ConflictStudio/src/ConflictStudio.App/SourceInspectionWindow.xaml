@@ -1,0 +1,41 @@
+<Window x:Class="ConflictStudio.App.SourceInspectionWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Source inspection" Width="1000" Height="760" MinWidth="760" MinHeight="560" WindowStartupLocation="CenterOwner" Background="#070B0F" Foreground="#F2F6F7" FontFamily="Segoe UI">
+    <Grid Margin="16">
+        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+        <StackPanel>
+            <DockPanel>
+                <Button x:Name="BackButton" DockPanel.Dock="Left" Content="Back" Margin="0,0,12,0" IsEnabled="False" Click="BackClicked" />
+                <TextBlock x:Name="SourceTitleTextBlock" FontSize="18" FontWeight="SemiBold" TextWrapping="Wrap" MaxHeight="64" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+            </DockPanel>
+            <TextBlock Margin="0,7,0,0" Foreground="#8EA2AD" Text="Recorded source context. Declarations do not establish the final value used in game." TextWrapping="Wrap" />
+            <TextBox x:Name="SourcePathTextBox" Margin="0,7,0,0" IsReadOnly="True" TextWrapping="Wrap" MaxHeight="52" VerticalScrollBarVisibility="Auto" AutomationProperties.Name="Source location" />
+        </StackPanel>
+        <StackPanel x:Name="ReferencePanel" Grid.Row="1" Margin="0,10,0,0">
+            <TextBlock x:Name="ReferenceStatusTextBlock" Foreground="#8EA2AD" TextWrapping="Wrap" MaxHeight="48" />
+            <DockPanel x:Name="DefinitionChoicesPanel" Margin="0,5,0,0">
+                <Button x:Name="FollowReferenceButton" DockPanel.Dock="Right" Content="View definition" Margin="8,0,0,0" Click="FollowReferenceClicked" IsEnabled="False" />
+                <ComboBox x:Name="DefinitionComboBox" AutomationProperties.Name="Captured local definitions" />
+            </DockPanel>
+        </StackPanel>
+        <Grid Grid.Row="2" Margin="0,10,0,0">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+            <TextBox x:Name="SourceSearchTextBox" MaxLength="512" KeyDown="SearchKeyDown" ToolTip="Find literal text in this verified source file" AutomationProperties.Name="Search source" />
+            <Button x:Name="FindSourceButton" Grid.Column="1" Margin="8,0,0,0" Content="Find" Click="FindClicked" IsEnabled="False" />
+            <Button x:Name="PreviousMatchButton" Grid.Column="2" Margin="8,0,0,0" Content="Previous" Click="PreviousMatchClicked" IsEnabled="False" />
+            <Button x:Name="NextMatchButton" Grid.Column="3" Margin="8,0,0,0" Content="Next" Click="NextMatchClicked" IsEnabled="False" />
+            <ComboBox x:Name="SourceFontSizeComboBox" Grid.Column="4" Width="76" Margin="8,0,0,0" SelectionChanged="FontSizeChanged" AutomationProperties.Name="Source text size">
+                <ComboBoxItem Tag="11">11 px</ComboBoxItem><ComboBoxItem Tag="13" IsSelected="True">13 px</ComboBoxItem><ComboBoxItem Tag="15">15 px</ComboBoxItem><ComboBoxItem Tag="17">17 px</ComboBoxItem><ComboBoxItem Tag="20">20 px</ComboBoxItem><ComboBoxItem Tag="24">24 px</ComboBoxItem>
+            </ComboBox>
+        </Grid>
+        <TextBlock x:Name="SearchStatusTextBlock" Grid.Row="3" Margin="0,6,0,6" Foreground="#8EA2AD" TextWrapping="Wrap" />
+        <RichTextBox x:Name="SourceCodeBox" Grid.Row="4" IsReadOnly="True" IsDocumentEnabled="False" FontFamily="Consolas" FontSize="13" Background="#090F14" Foreground="#E7ECEB" BorderBrush="#28404D" BorderThickness="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" AutomationProperties.Name="Verified source context" />
+        <StackPanel Grid.Row="5" Margin="0,8,0,0">
+            <WrapPanel>
+                <Button x:Name="InspectorOpenButton" Content="Open in editor" Click="OpenAtLineClicked" IsEnabled="False" ToolTip="Open the recorded line or current search match using the selected editor's line support." />
+                <Button Margin="8,0,0,0" Content="Editor settings" Click="EditorSettingsClicked" />
+                <Button x:Name="InspectorContextButton" Margin="8,0,0,0" Content="More context" Click="MoreContextClicked" IsEnabled="False" />
+                <Button x:Name="OriginalLocationButton" Margin="8,0,0,0" Content="Recorded location" Click="OriginalLocationClicked" IsEnabled="False" />
+            </WrapPanel>
+            <TextBlock x:Name="InspectorStatusTextBlock" Margin="0,7,0,0" Foreground="#8EA2AD" TextWrapping="Wrap" />
+        </StackPanel>
+    </Grid>
+</Window>

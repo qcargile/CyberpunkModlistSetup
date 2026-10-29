@@ -1,0 +1,112 @@
+<Window x:Class="ConflictStudio.App.CodeComparisonWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Source comparison" Width="1320" Height="860" MinWidth="900" MinHeight="600"
+        WindowStartupLocation="CenterOwner" Background="#070B0F" Foreground="#F2F6F7" FontFamily="Segoe UI">
+    <Window.Resources>
+        <Style x:Key="ContributorText" TargetType="TextBlock">
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+            <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}" />
+            <Setter Property="Margin" Value="3,0" />
+        </Style>
+    </Window.Resources>
+    <Grid Margin="18" Background="#070B0F" SizeChanged="ComparisonLayoutChanged">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <StackPanel Margin="0,0,0,14">
+            <TextBlock Text="Source comparison" Foreground="#00F0FF" FontSize="13" />
+            <TextBlock x:Name="TargetTextBlock" Margin="0,5,0,0" FontSize="19" FontWeight="SemiBold" TextWrapping="Wrap" />
+            <ComboBox x:Name="WitnessComboBox" Margin="0,9,0,0" SelectionChanged="WitnessSelectionChanged" Visibility="Collapsed" />
+            <TextBlock x:Name="WitnessTitleTextBlock" Margin="0,8,0,0" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap" />
+            <TextBlock x:Name="ExplanationTextBlock" Margin="0,7,0,0" Foreground="#BAC7C5" TextWrapping="Wrap" MaxHeight="64" />
+            <TextBlock x:Name="ScopeTextBlock" Margin="0,5,0,0" Foreground="#8EA2AD" TextWrapping="Wrap" />
+            <TextBlock x:Name="BoundaryTextBlock" Margin="0,5,0,0" Foreground="#8EA2AD" TextWrapping="Wrap" MaxHeight="42" />
+        </StackPanel>
+        <Expander x:Name="ContributorsExpander" Grid.Row="1" Margin="0,0,0,8">
+            <Expander.Header><TextBlock x:Name="ContributorsTitleTextBlock" Text="Contributors and source context" /></Expander.Header>
+            <StackPanel Margin="0,6,0,0">
+                <TextBlock Text="Display order does not establish execution order. Only marked operations support the selected issue." Foreground="#8EA2AD" TextWrapping="Wrap" />
+                <DataGrid x:Name="ContributorsDataGrid" Margin="0,5,0,0" Height="112" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" SelectionMode="Single" SelectionUnit="FullRow" SelectionChanged="ContributorSelectionChanged" EnableRowVirtualization="True" Background="#090F14" Foreground="#E7ECEB" BorderBrush="#28404D" RowHeaderWidth="0">
+                    <DataGrid.CellStyle><Style TargetType="DataGridCell"><Setter Property="Background" Value="Transparent" /><Setter Property="Foreground" Value="#E7ECEB" /><Style.Triggers><Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="#075A66" /><Setter Property="Foreground" Value="White" /></Trigger></Style.Triggers></Style></DataGrid.CellStyle>
+                    <DataGrid.RowStyle><Style TargetType="DataGridRow"><Setter Property="Background" Value="#0D171C" /></Style></DataGrid.RowStyle>
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Provider" Binding="{Binding Provider}" Width="180" ElementStyle="{StaticResource ContributorText}" />
+                        <DataGridTextColumn Header="Operation" Binding="{Binding Operation}" Width="160" ElementStyle="{StaticResource ContributorText}" />
+                        <DataGridTextColumn Header="Value" Binding="{Binding Value}" Width="*" MinWidth="100" ElementStyle="{StaticResource ContributorText}" />
+                        <DataGridTextColumn Header="Source location" Binding="{Binding Location}" Width="2*" MinWidth="140" ElementStyle="{StaticResource ContributorText}" />
+                        <DataGridTextColumn Header="Relationship" Binding="{Binding Relationship}" Width="145" ElementStyle="{StaticResource ContributorText}" />
+                    </DataGrid.Columns>
+                </DataGrid>
+                <DockPanel Margin="0,5,0,0">
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                        <Button x:Name="CompareContributorButton" Content="Use in comparison" IsEnabled="False" Click="CompareContributorClicked" />
+                        <Button x:Name="InspectContributorButton" Margin="8,0,0,0" Content="Inspect source / reference" IsEnabled="False" Click="InspectContributorClicked" />
+                    </StackPanel>
+                    <TextBlock x:Name="ContributorReferenceTextBlock" Margin="0,0,10,0" Foreground="#8EA2AD" TextWrapping="Wrap" MaxHeight="36" />
+                </DockPanel>
+            </StackPanel>
+        </Expander>
+        <DockPanel Grid.Row="2" Margin="0,0,0,12">
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                <ComboBox x:Name="ComparisonFontComboBox" Width="75" Margin="0,0,8,0" SelectionChanged="ComparisonFontChanged" AutomationProperties.Name="Comparison text size">
+                    <ComboBoxItem Tag="11">11 px</ComboBoxItem><ComboBoxItem Tag="13" IsSelected="True">13 px</ComboBoxItem><ComboBoxItem Tag="15">15 px</ComboBoxItem><ComboBoxItem Tag="17">17 px</ComboBoxItem><ComboBoxItem Tag="20">20 px</ComboBoxItem><ComboBoxItem Tag="24">24 px</ComboBoxItem>
+                </ComboBox>
+                <Button Margin="0,0,8,0" Content="Editor settings" Click="ComparisonEditorSettingsClicked" />
+                <Button x:Name="MoreContextButton" Click="MoreContextClicked" Content="Show more context" IsEnabled="False" />
+                <Button Margin="8,0,0,0" Click="ResetContextClicked" Content="Reset context" />
+            </StackPanel>
+            <StackPanel VerticalAlignment="Center">
+                <StackPanel Orientation="Horizontal">
+                    <StackPanel x:Name="IssueNavigationPanel" Orientation="Horizontal">
+                    <Button x:Name="PreviousIssueButton" Content="‹" Padding="8,2" Margin="0,0,5,0" Click="PreviousIssueClicked" IsEnabled="False" ToolTip="Previous issue" AutomationProperties.Name="Previous issue" />
+                    <Button x:Name="NextIssueButton" Content="›" Padding="8,2" Margin="0,0,8,0" Click="NextIssueClicked" IsEnabled="False" ToolTip="Next issue" AutomationProperties.Name="Next issue" />
+                    </StackPanel>
+                    <TextBlock x:Name="SourcesTextBlock" VerticalAlignment="Center" />
+                </StackPanel>
+                <CheckBox x:Name="ContextDifferencesCheckBox" Margin="0,5,12,0" Content="Compare surrounding text" Checked="ContextHighlightChanged" Unchecked="ContextHighlightChanged" ToolTip="Blue highlights compare the surrounding text in these excerpts. They do not identify additional conflicts or change this finding." />
+            </StackPanel>
+        </DockPanel>
+        <Grid Grid.Row="3" Grid.IsSharedSizeScope="True">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="12" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+            <Grid>
+                <Grid.RowDefinitions><RowDefinition Height="Auto" SharedSizeGroup="SourceSelector" /><RowDefinition Height="Auto" SharedSizeGroup="SourcePath" /><RowDefinition Height="Auto" SharedSizeGroup="SourceStatus" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                <StackPanel>
+                    <TextBlock x:Name="LeftRoleTextBlock" Margin="0,0,0,6" FontWeight="SemiBold" Foreground="#FFD884" TextWrapping="Wrap" MaxHeight="42" />
+                    <ComboBox x:Name="LeftSourceComboBox" SelectionChanged="SourceSelectionChanged" />
+                </StackPanel>
+                <TextBox x:Name="LeftPathTextBox" Grid.Row="1" Margin="0,7,0,0" IsReadOnly="True" Background="#090F14" Foreground="#BAC7C5" BorderThickness="0" TextWrapping="Wrap" MaxHeight="52" VerticalScrollBarVisibility="Auto" />
+                <TextBlock x:Name="LeftStatusTextBlock" Grid.Row="2" Margin="0,7,0,7" Foreground="#8EA2AD" TextWrapping="Wrap" />
+                <RichTextBox x:Name="LeftCodeBox" Grid.Row="3" IsReadOnly="True" IsDocumentEnabled="False" FontFamily="Consolas" FontSize="13" Background="#090F14" Foreground="#E7ECEB" BorderBrush="#28404D" BorderThickness="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" AutomationProperties.Name="Left source code" />
+                <WrapPanel Grid.Row="4" Margin="0,8,0,0">
+                    <Button x:Name="LeftOpenButton" Tag="Left" Click="OpenFileClicked" Content="Open in editor" ToolTip="Use the selected editor's line support when available." />
+                    <Button x:Name="LeftFolderButton" Tag="Left" Margin="8,0,0,0" Click="ShowFolderClicked" Content="Show in folder" />
+                    <Button x:Name="LeftCopyButton" Tag="Left" Margin="8,0,0,0" Click="CopyPathClicked" Content="Copy path" />
+                    <Button Tag="Left" Margin="8,0,0,0" Click="InspectPaneClicked" Content="Inspect / find" />
+                </WrapPanel>
+            </Grid>
+            <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Center" Background="#28404D" ResizeDirection="Columns" ResizeBehavior="PreviousAndNext" />
+            <Grid Grid.Column="2">
+                <Grid.RowDefinitions><RowDefinition Height="Auto" SharedSizeGroup="SourceSelector" /><RowDefinition Height="Auto" SharedSizeGroup="SourcePath" /><RowDefinition Height="Auto" SharedSizeGroup="SourceStatus" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                <StackPanel>
+                    <TextBlock x:Name="RightRoleTextBlock" Margin="0,0,0,6" FontWeight="SemiBold" Foreground="#FFD884" TextWrapping="Wrap" MaxHeight="42" />
+                    <ComboBox x:Name="RightSourceComboBox" SelectionChanged="SourceSelectionChanged" />
+                </StackPanel>
+                <TextBox x:Name="RightPathTextBox" Grid.Row="1" Margin="0,7,0,0" IsReadOnly="True" Background="#090F14" Foreground="#BAC7C5" BorderThickness="0" TextWrapping="Wrap" MaxHeight="52" VerticalScrollBarVisibility="Auto" />
+                <TextBlock x:Name="RightStatusTextBlock" Grid.Row="2" Margin="0,7,0,7" Foreground="#8EA2AD" TextWrapping="Wrap" />
+                <RichTextBox x:Name="RightCodeBox" Grid.Row="3" IsReadOnly="True" IsDocumentEnabled="False" FontFamily="Consolas" FontSize="13" Background="#090F14" Foreground="#E7ECEB" BorderBrush="#28404D" BorderThickness="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" AutomationProperties.Name="Right source code" />
+                <WrapPanel Grid.Row="4" Margin="0,8,0,0">
+                    <Button x:Name="RightOpenButton" Tag="Right" Click="OpenFileClicked" Content="Open in editor" ToolTip="Use the selected editor's line support when available." />
+                    <Button x:Name="RightFolderButton" Tag="Right" Margin="8,0,0,0" Click="ShowFolderClicked" Content="Show in folder" />
+                    <Button x:Name="RightCopyButton" Tag="Right" Margin="8,0,0,0" Click="CopyPathClicked" Content="Copy path" />
+                    <Button Tag="Right" Margin="8,0,0,0" Click="InspectPaneClicked" Content="Inspect / find" />
+                </WrapPanel>
+            </Grid>
+        </Grid>
+        <TextBlock x:Name="ComparisonStatusTextBlock" Grid.Row="4" Margin="0,10,0,0" Foreground="#8EA2AD" TextWrapping="Wrap" />
+    </Grid>
+</Window>
