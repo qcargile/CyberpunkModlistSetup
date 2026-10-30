@@ -5,7 +5,7 @@ A native archive-order tab for Cyberpunk 2077 in MO2 2.5.2 on Windows x64. It us
 ## Install
 
 1. Close MO2.
-2. Extract `ChromeBlood-Archives-1.0.zip` into the folder containing `ModOrganizer.exe`.
+2. Extract `ChromeBlood-Archives-1.0.1.zip` into the folder containing `ModOrganizer.exe`.
 3. Check that `plugins/chrome_blood_archives` and `Tools/Conflict Studio/Mo2Bridge/ConflictStudio.Mo2Bridge.exe` exist under that folder.
 4. Open MO2 with Cyberpunk 2077 selected. Archives Load Order appears before Data.
 

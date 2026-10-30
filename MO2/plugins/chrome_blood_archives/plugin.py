@@ -144,7 +144,7 @@ class ChromeBloodArchives(mobase.IPluginTool, mobase.IPluginFileMapper):
         return "Orders archives per profile using Cyberpunk Conflict Studio."
 
     def version(self):
-        return mobase.VersionInfo(1, 0, 0)
+        return mobase.VersionInfo(1, 0, 1)
 
     def settings(self):
         return []
