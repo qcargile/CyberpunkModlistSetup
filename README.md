@@ -2,17 +2,17 @@
 
 Preparation and MO2 plugins for Chrome & Blood, the Cyberpunk 2077 Wabbajack list.
 
-[Download version 1.0](https://github.com/qcargile/CyberpunkModlistSetup/releases/tag/v1.0)
+[Download Setup 1.0.1](https://github.com/qcargile/CyberpunkModlistSetup/releases/tag/v1.0.1) · [MO2 plugins 1.0](https://github.com/qcargile/CyberpunkModlistSetup/releases/tag/v1.0)
 
 | Download | Use it for |
 | --- | --- |
-| `ChromeBlood-Setup-1.0.zip` | Prepare the game and Windows, then open Chrome & Blood in Wabbajack. |
+| `ChromeBlood-Setup-1.0.1.zip` | Prepare the game and Windows, then open Chrome & Blood in Wabbajack. |
 | `ChromeBlood-Archives-1.0.zip` | Drag archives into order in MO2, with conflict highlights and an order saved per profile. |
 | `ChromeBlood-Update-Notice-1.0.zip` | Get a notification in MO2 when a newer Chrome & Blood list version is available. |
 
 The plugins install independently. Setup does not install them. C&B list authors can include them in the Wabbajack package.
 
-Setup 1.0 targets Cyberpunk 2077 2.5. Use it with a C&B revision that supports that game version; it is not intended for older 2.31a revisions. Releasing these tools does not update the modlist itself.
+Setup 1.0.1 targets Cyberpunk 2077 2.5. Use it with a C&B revision that supports that game version; it is not intended for older 2.31a revisions. Releasing these tools does not update the modlist itself.
 
 ## Setup
 
@@ -51,7 +51,7 @@ dotnet test --solution ChromeBlood.Setup.slnx -c Release -- --filter "TestCatego
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1
 ```
 
-The packaging command creates the three ZIPs and their checksums in `dist/1.0`. It refuses an existing output directory. MO2 plugin tests under `MO2/tests` use MO2's own Python and Qt libraries; the parser-only notification tests also run with ordinary Python.
+The packaging command creates the three ZIPs and their checksums under `dist`, using the version in `Directory.Build.props` for the folder and archive names. It refuses an existing output directory. The 1.0.1 release updates Setup only; the published MO2 plugins remain at 1.0. MO2 plugin tests under `MO2/tests` use MO2's own Python and Qt libraries; the parser-only notification tests also run with ordinary Python.
 
 The Steam reference contains file names, sizes and hashes, not game content. Its provenance and import procedure are in [fixtures/vanilla/README.md](fixtures/vanilla/README.md). A different game build needs a matching reference before whole-folder cleanup can classify it.
 
