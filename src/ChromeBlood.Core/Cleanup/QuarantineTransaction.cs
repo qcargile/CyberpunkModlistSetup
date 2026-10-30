@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Security.AccessControl;
 using System.Runtime.InteropServices;
+using System.Text.Json.Serialization;
 using ChromeBlood.Contracts.Serialization;
 using ChromeBlood.Core.Acquisition;
 using Microsoft.Win32.SafeHandles;
@@ -28,6 +29,10 @@ public sealed record QuarantineManifestEntry(
 {
     public CleanupPathMetadata? Metadata { get; init; }
     public string? FailureReason { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? NativeErrorCode { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? FailureHResult { get; init; }
 }
 
 public sealed record QuarantineManifest(
@@ -38,9 +43,17 @@ public sealed record QuarantineManifest(
     string QuarantineRoot,
     string QuarantineRootIdentity,
     QuarantineTransactionState State,
-    QuarantineManifestEntry[] Entries);
+    QuarantineManifestEntry[] Entries)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? FailureReason { get; init; }
+}
 
-public sealed record QuarantineEntryResult(string RelativePath, QuarantineEntryState State, QuarantineFailure Failure, string? Reason = null);
+public sealed record QuarantineEntryResult(string RelativePath, QuarantineEntryState State, QuarantineFailure Failure, string? Reason = null)
+{
+    public int? NativeErrorCode { get; init; }
+    public int? FailureHResult { get; init; }
+}
 
 public sealed record QuarantineResult(
     QuarantineTransactionState State,
@@ -54,6 +67,7 @@ public sealed record QuarantineRestoreResult(string QuarantineId, QuarantineRest
 public sealed record QuarantineRecoveryState(string QuarantineId, QuarantineTransactionState State, QuarantineManifestEntry[] Entries, bool HasCommittedManifest)
 {
     public string GameRoot { get; init; } = string.Empty;
+    public string? FailureReason { get; init; }
 }
 public sealed record QuarantineRestoreRecovery(int SchemaVersion, string QuarantineId, string ManifestSha256, QuarantineRestoreEntry[] Entries);
 
@@ -255,56 +269,160 @@ public sealed class QuarantineTransaction
         ArgumentNullException.ThrowIfNull(journal);
         using IDisposable transactionLock = journal.AcquireTransaction(quarantineId);
         UndoJournalEntry reservation = journal.RequireReservation(quarantineId, planSha256);
+        string transactionRoot = Path.Combine(reservation.QuarantineRoot, quarantineId);
+        if (!CleanupPlanner.PathEquals(reservation.WalPath, Path.Combine(transactionRoot, "transaction.wal.json"))
+            || !CleanupPlanner.PathEquals(reservation.ManifestPath, Path.Combine(transactionRoot, "quarantine.json")))
+            throw new CleanupManifestException("The cleanup reservation does not point to its exact transaction files.");
         if (File.Exists(reservation.ManifestPath))
         {
             QuarantineManifest committed = QuarantineManifestCodec.ReadStrict(reservation.ManifestPath);
+            ValidateRecoveryBinding(committed, reservation);
             string manifestSha = QuarantineManifestCodec.Sha256(reservation.ManifestPath);
             journal.UpdateReservation(quarantineId, planSha256, UndoJournalState.Available, manifestSha);
-            return Task.FromResult(new QuarantineResult(QuarantineTransactionState.Committed, reservation.ManifestPath, committed, committed.Entries.Select(entry => new QuarantineEntryResult(entry.RelativePath, entry.State, entry.Failure)).ToArray()));
+            return Task.FromResult(new QuarantineResult(QuarantineTransactionState.Committed, reservation.ManifestPath, committed, EntryResults(committed.Entries)));
         }
 
         QuarantineManifest wal = ReadWalStrict(reservation.WalPath, false, out string headerSha256);
+        ValidateRecoveryBinding(wal, reservation);
         using SecureCacheRoot heldGameRoot = new(wal.GameRoot, new WindowsSecureFileApi(), false);
         using SecureCacheRoot heldQuarantineRoot = new(wal.QuarantineRoot, new WindowsSecureFileApi(), false);
         using SecureCacheRoot heldTransactionRoot = new(Path.Combine(wal.QuarantineRoot, quarantineId), new WindowsSecureFileApi(), false);
+        if (WindowsCleanupProbe.IdentityOfDirectory(wal.GameRoot) != wal.GameRootIdentity
+            || WindowsCleanupProbe.IdentityOfDirectory(wal.QuarantineRoot) != wal.QuarantineRootIdentity)
+            throw new CleanupManifestException("A cleanup root identity changed since this transaction was recorded.");
         using CleanupDirectoryGuard filesGuard = new(Path.Combine(wal.QuarantineRoot, quarantineId, "files"));
         using EntryStateStore states = new(reservation.WalPath, headerSha256, wal);
         QuarantineManifestEntry[] entries = [.. wal.Entries];
+        Dictionary<string, CleanupEntryKind> destinationKinds = entries.ToDictionary(value => value.DestinationPath, value => value.Kind, StringComparer.OrdinalIgnoreCase);
+        HashSet<string> destinationPaths = new(StringComparer.OrdinalIgnoreCase) { Path.Combine(wal.QuarantineRoot, quarantineId, "files") };
+        foreach (QuarantineManifestEntry entry in entries)
+        {
+            string current = entry.DestinationPath;
+            while (destinationPaths.Add(current))
+                current = Path.GetDirectoryName(current) ?? throw new CleanupManifestException("The transaction destination topology is invalid.");
+        }
         for (int index = 0; index < entries.Length; index++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             QuarantineManifestEntry entry = entries[index];
-            if (entry.State == QuarantineEntryState.Stored) continue;
             try
             {
+                if (entry.State == QuarantineEntryState.Stored)
+                {
+                    VerifyStoredEntry(entry, destinationKinds, destinationPaths, filesGuard);
+                    continue;
+                }
                 void PersistBoundary(QuarantineEntryState state, string postIdentity)
                 {
-                    entry = entry with { State = state, PostIdentity = postIdentity, Failure = QuarantineFailure.None };
+                    entry = entry with { State = state, PostIdentity = postIdentity, Failure = QuarantineFailure.None, FailureReason = null, NativeErrorCode = null, FailureHResult = null };
                     entries[index] = entry;
                     states.Persist(entries[index]);
                 }
                 string postIdentity = entry.Kind == CleanupEntryKind.File
                     ? RecoverFile(entry, filesGuard, PersistBoundary, cancellationToken)
                     : RecoverDirectory(entry, entries, filesGuard, PersistBoundary);
-                entries[index] = entry with { State = QuarantineEntryState.Stored, PostIdentity = postIdentity, Failure = QuarantineFailure.None };
+                entries[index] = entry with { State = QuarantineEntryState.Stored, PostIdentity = postIdentity, Failure = QuarantineFailure.None, FailureReason = null, NativeErrorCode = null, FailureHResult = null };
                 states.Persist(entries[index]);
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or CleanupPlanException or System.ComponentModel.Win32Exception)
             {
-                entries[index] = entry with { State = QuarantineEntryState.Failed, Failure = Classify(exception) };
-                QuarantineManifest failed = wal with { State = QuarantineTransactionState.Recoverable, Entries = entries };
+                entries[index] = FailedEntry(entry, exception);
+                QuarantineManifest failed = wal with { State = QuarantineTransactionState.Recoverable, Entries = entries, FailureReason = null };
                 PersistWal(reservation.WalPath, failed);
                 journal.UpdateReservation(quarantineId, planSha256, UndoJournalState.Executing);
-                return Task.FromResult(new QuarantineResult(failed.State, reservation.ManifestPath, failed, entries.Select(value => new QuarantineEntryResult(value.RelativePath, value.State, value.Failure)).ToArray()));
+                return Task.FromResult(new QuarantineResult(failed.State, reservation.ManifestPath, failed, EntryResults(entries)));
             }
         }
 
-        QuarantineManifest final = wal with { State = QuarantineTransactionState.Committed, Entries = entries };
+        QuarantineManifest final = wal with { State = QuarantineTransactionState.Committed, Entries = entries, FailureReason = null };
         byte[] bytes = QuarantineManifestCodec.Write(final);
-        WriteAtomic(reservation.ManifestPath, bytes, false);
+        try { WriteAtomic(reservation.ManifestPath, bytes, false); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            QuarantineManifest failed = wal with { State = QuarantineTransactionState.Recoverable, Entries = entries, FailureReason = TransactionFailure(exception) };
+            PersistWal(reservation.WalPath, failed);
+            return Task.FromResult(new QuarantineResult(failed.State, reservation.ManifestPath, failed, EntryResults(entries)));
+        }
         string sha = Convert.ToHexStringLower(SHA256.HashData(bytes));
         journal.UpdateReservation(quarantineId, planSha256, UndoJournalState.Available, sha);
-        return Task.FromResult(new QuarantineResult(final.State, reservation.ManifestPath, final, entries.Select(value => new QuarantineEntryResult(value.RelativePath, value.State, value.Failure)).ToArray()));
+        return Task.FromResult(new QuarantineResult(final.State, reservation.ManifestPath, final, EntryResults(entries)));
+    }
+
+    private static void ValidateRecoveryBinding(QuarantineManifest manifest, UndoJournalEntry reservation)
+    {
+        if (manifest.QuarantineId != reservation.QuarantineId || !CleanupPlanner.PathEquals(manifest.QuarantineRoot, reservation.QuarantineRoot))
+            throw new CleanupManifestException("The cleanup journal is not bound to the recorded quarantine.");
+    }
+
+    private static QuarantineManifestEntry FailedEntry(QuarantineManifestEntry entry, Exception exception)
+        => entry with { State = QuarantineEntryState.Failed, Failure = Classify(exception), FailureReason = ExceptionReason(exception),
+            NativeErrorCode = NativeError(exception), FailureHResult = exception.HResult };
+
+    private static string ExceptionReason(Exception exception)
+        => exception.InnerException is null ? exception.Message : exception.Message + " " + exception.GetBaseException().Message;
+
+    private static string TransactionFailure(Exception exception)
+        => ExceptionReason(exception) + (NativeError(exception) is int error ? " (Windows error " + error + ")" : string.Empty)
+            + " (HRESULT 0x" + exception.HResult.ToString("X8", System.Globalization.CultureInfo.InvariantCulture) + "). Keep the backup and retry cleanup after resolving this error.";
+
+    private static QuarantineEntryResult[] EntryResults(QuarantineManifestEntry[] entries)
+        => entries.Select(entry => new QuarantineEntryResult(entry.RelativePath, entry.State, entry.Failure, entry.FailureReason)
+        { NativeErrorCode = entry.NativeErrorCode, FailureHResult = entry.FailureHResult }).ToArray();
+
+    private static void VerifyStoredEntry(QuarantineManifestEntry entry, IReadOnlyDictionary<string, CleanupEntryKind> destinationKinds,
+        IReadOnlySet<string> destinationPaths, CleanupDirectoryGuard destinationGuard)
+    {
+        destinationGuard.EnsureParent(entry.DestinationPath);
+        if (entry.Kind == CleanupEntryKind.Directory)
+        {
+            VerifyStoredDirectory(entry, destinationKinds, destinationPaths);
+            return;
+        }
+        WindowsSecureFileApi api = new();
+        using SafeFileHandle held = api.Open(new SecureFileOpenRequest(entry.DestinationPath,
+            SecureFileAccess.Read | SecureFileAccess.Attributes, FileShare.Read, SecureFileDisposition.OpenExisting,
+            SecureFileOpenOptions.OpenReparsePoint | SecureFileOpenOptions.Sequential))
+            ?? throw new FileNotFoundException("The stored quarantine payload is missing.", entry.DestinationPath);
+        SecureFileMetadata metadata = api.GetMetadata(held);
+        FileEvidence evidence = FileEvidence.Read(held);
+        if (metadata.IsDirectory || metadata.IsReparsePoint || !CleanupPlanner.PathEquals(WindowsCleanupProbe.FinalPath(held), entry.DestinationPath))
+            throw new CleanupPlanException("The stored quarantine payload is a reparse point or physical escape.");
+        if (evidence.Identity != entry.PostIdentity) throw new CleanupPlanException("The stored quarantine payload identity changed.");
+        if (evidence.Size != entry.Size || evidence.Sha256 != entry.Sha256) throw new CleanupPlanException("The stored quarantine payload content changed.");
+        if (!MetadataMatches(entry.DestinationPath, CleanupEntryKind.File, entry.Metadata)) throw new IOException("The stored quarantine payload metadata changed.");
+    }
+
+    private static void VerifyStoredDirectory(QuarantineManifestEntry entry, IReadOnlyDictionary<string, CleanupEntryKind> destinationKinds,
+        IReadOnlySet<string> destinationPaths)
+    {
+        WindowsSecureFileApi api = new();
+        using SafeFileHandle held = api.Open(new SecureFileOpenRequest(entry.DestinationPath, SecureFileAccess.Attributes,
+            FileShare.Read, SecureFileDisposition.OpenExisting, SecureFileOpenOptions.OpenReparsePoint | SecureFileOpenOptions.Directory))
+            ?? throw new DirectoryNotFoundException(entry.DestinationPath);
+        SecureFileMetadata metadata = api.GetMetadata(held);
+        if (!metadata.IsDirectory || metadata.IsReparsePoint || !CleanupPlanner.PathEquals(WindowsCleanupProbe.FinalPath(held), entry.DestinationPath))
+            throw new CleanupPlanException("The stored quarantine directory is a reparse point or physical escape.");
+        if (WindowsCleanupProbe.Identity(held) != entry.PostIdentity) throw new CleanupPlanException("The stored quarantine directory identity changed.");
+        if (!MetadataMatches(entry.DestinationPath, CleanupEntryKind.Directory, entry.Metadata)) throw new IOException("The stored quarantine directory metadata changed.");
+        Stack<string> pending = new();
+        pending.Push(entry.DestinationPath);
+        while (pending.Count > 0)
+        {
+            foreach (string child in Directory.EnumerateFileSystemEntries(pending.Pop()))
+            {
+                string full = Path.GetFullPath(child);
+                FileAttributes attributes = File.GetAttributes(full);
+                if (!destinationPaths.Contains(full) || attributes.HasFlag(FileAttributes.ReparsePoint))
+                    throw new CleanupPlanException("The stored quarantine directory contains an unowned or reparse entry.");
+                bool directory = attributes.HasFlag(FileAttributes.Directory);
+                if (destinationKinds.TryGetValue(full, out CleanupEntryKind expected))
+                {
+                    if (directory != (expected == CleanupEntryKind.Directory)) throw new CleanupPlanException("A stored quarantine child kind changed.");
+                }
+                else if (directory) pending.Push(full);
+                else throw new CleanupPlanException("The stored quarantine directory contains an unplanned file.");
+            }
+        }
     }
 
     private string RecoverFile(QuarantineManifestEntry entry, CleanupDirectoryGuard destinationGuard, Action<QuarantineEntryState, string> persistBoundary, CancellationToken cancellationToken)
@@ -313,22 +431,75 @@ public sealed class QuarantineTransaction
         if (File.Exists(entry.DestinationPath))
         {
             WindowsSecureFileApi api = new();
-            using SafeFileHandle held = api.Open(new SecureFileOpenRequest(entry.DestinationPath, SecureFileAccess.Read | SecureFileAccess.Attributes, FileShare.Read, SecureFileDisposition.OpenExisting, SecureFileOpenOptions.OpenReparsePoint | SecureFileOpenOptions.Sequential))
+            using SafeFileHandle held = api.Open(new SecureFileOpenRequest(entry.DestinationPath, SecureFileAccess.Read | SecureFileAccess.Attributes | SecureFileAccess.WriteAttributes, FileShare.Read, SecureFileDisposition.OpenExisting, SecureFileOpenOptions.OpenReparsePoint | SecureFileOpenOptions.Sequential))
                 ?? throw new FileNotFoundException("The published quarantine payload is missing.", entry.DestinationPath);
             SecureFileMetadata metadata = api.GetMetadata(held);
             if (metadata.IsDirectory || metadata.IsReparsePoint || !CleanupPlanner.PathEquals(WindowsCleanupProbe.FinalPath(held), entry.DestinationPath))
                 throw new CleanupPlanException("The published quarantine payload is not a direct regular file.");
             FileEvidence destination = FileEvidence.Read(held);
-            if (destination.Size != entry.Size || destination.Sha256 != entry.Sha256 || !MetadataMatches(entry.DestinationPath, CleanupEntryKind.File, entry.Metadata)) throw new IOException("The published quarantine payload or metadata changed.");
-            if (File.Exists(entry.SourcePath)) DeleteVerifiedSource(entry.SourcePath, entry.PreIdentity, entry.Size, entry.Sha256);
+            if (entry.PostIdentity.Length > 0 && destination.Identity != entry.PostIdentity) throw new CleanupPlanException("The published quarantine payload identity changed.");
+            if (destination.Size != entry.Size || destination.Sha256 != entry.Sha256) throw new IOException("The published quarantine payload content changed.");
+            if (!MetadataMatches(entry.DestinationPath, CleanupEntryKind.File, entry.Metadata))
+                RepairPublishedMetadata(entry, held, cancellationToken);
+            else if (AttributesOrMissing(entry.SourcePath) is not null) DeleteVerifiedSource(entry);
             string partial = entry.DestinationPath + ".partial";
             if (File.Exists(partial)) DeleteVerifiedDuplicate(partial, entry.Size, entry.Sha256);
             return destination.Identity;
         }
         string pending = entry.DestinationPath + ".partial";
-        if (File.Exists(pending)) DeleteVerifiedDuplicate(pending, entry.Size, entry.Sha256);
         if (!File.Exists(entry.SourcePath)) throw new FileNotFoundException("Neither cleanup source nor verified destination exists.", entry.SourcePath);
+        if (File.Exists(pending)) DeleteRecoverablePartial(entry, pending);
         return StoreFile(entry with { Failure = QuarantineFailure.None }, destinationGuard, persistBoundary, cancellationToken);
+    }
+
+    private void RepairPublishedMetadata(QuarantineManifestEntry entry, SafeFileHandle destination, CancellationToken cancellationToken)
+    {
+        if (entry.PostIdentity.Length == 0) throw new CleanupPlanException("The published backup metadata changed and its recorded identity is missing. Keep the backup and inspect it before retrying.");
+        WindowsSecureFileApi api = new();
+        using SafeFileHandle source = api.Open(new SecureFileOpenRequest(entry.SourcePath,
+            SecureFileAccess.Read | SecureFileAccess.Delete | SecureFileAccess.Attributes, FileShare.Read,
+            SecureFileDisposition.OpenExisting, SecureFileOpenOptions.OpenReparsePoint | SecureFileOpenOptions.Sequential))
+            ?? throw new FileNotFoundException("The original cleanup source is missing; the published backup metadata was retained.", entry.SourcePath);
+        cancellationToken.ThrowIfCancellationRequested();
+        _faults.Boundary("entry:before-metadata");
+        VerifySource(api, source, entry);
+        ApplyMetadata(entry.DestinationPath, CleanupEntryKind.File, entry.Metadata);
+        ApplyTimes(destination, entry.Metadata);
+        VerifyMetadata(entry.DestinationPath, CleanupEntryKind.File, entry.Metadata);
+        _faults.Boundary("entry:metadata-applied");
+        FileEvidence published = FileEvidence.Read(destination);
+        if (published.Identity != entry.PostIdentity || published.Size != entry.Size || published.Sha256 != entry.Sha256)
+            throw new CleanupPlanException("The published quarantine payload identity or content changed during metadata recovery.");
+        ApplyTimes(destination, entry.Metadata);
+        VerifyMetadata(entry.DestinationPath, CleanupEntryKind.File, entry.Metadata);
+        VerifySource(api, source, entry);
+        cancellationToken.ThrowIfCancellationRequested();
+        api.Delete(source);
+    }
+
+    private static void DeleteRecoverablePartial(QuarantineManifestEntry entry, string pending)
+    {
+        WindowsSecureFileApi api = new();
+        using SafeFileHandle source = api.Open(new SecureFileOpenRequest(entry.SourcePath,
+            SecureFileAccess.Read | SecureFileAccess.Attributes, FileShare.Read, SecureFileDisposition.OpenExisting,
+            SecureFileOpenOptions.OpenReparsePoint | SecureFileOpenOptions.Sequential))
+            ?? throw new FileNotFoundException("The cleanup source is missing; its partial backup was retained.", entry.SourcePath);
+        SecureFileMetadata sourceMetadata = api.GetMetadata(source);
+        FileEvidence evidence = FileEvidence.Read(source);
+        if (sourceMetadata.IsDirectory || sourceMetadata.IsReparsePoint || !CleanupPlanner.PathEquals(WindowsCleanupProbe.FinalPath(source), entry.SourcePath)
+            || evidence.Identity != entry.PreIdentity || evidence.Size != entry.Size || evidence.Sha256 != entry.Sha256)
+            throw new CleanupPlanException("The cleanup source identity or content changed; its partial backup was retained.");
+        using SafeFileHandle partial = api.Open(new SecureFileOpenRequest(pending,
+            SecureFileAccess.Read | SecureFileAccess.Delete | SecureFileAccess.Attributes, FileShare.Read,
+            SecureFileDisposition.OpenExisting, SecureFileOpenOptions.OpenReparsePoint | SecureFileOpenOptions.Sequential))
+            ?? throw new FileNotFoundException("The partial cleanup backup is missing.", pending);
+        SecureFileMetadata metadata = api.GetMetadata(partial);
+        if (metadata.IsDirectory || metadata.IsReparsePoint || !CleanupPlanner.PathEquals(WindowsCleanupProbe.FinalPath(partial), pending))
+            throw new CleanupPlanException("The partial cleanup backup is a reparse point or physical escape.");
+        FileEvidence copied = FileEvidence.Read(partial);
+        if (entry.PostIdentity != copied.Identity && (copied.Size != entry.Size || copied.Sha256 != entry.Sha256))
+            throw new CleanupPlanException("The incomplete partial backup has no matching recorded identity. Keep the backup and inspect it before retrying.");
+        api.Delete(partial);
     }
 
     private string RecoverDirectory(QuarantineManifestEntry entry, QuarantineManifestEntry[] transactionEntries, CleanupDirectoryGuard destinationGuard, Action<QuarantineEntryState, string> persistBoundary)
@@ -397,16 +568,24 @@ public sealed class QuarantineTransaction
         return WindowsCleanupProbe.Identity(held);
     }
 
-    private static void DeleteVerifiedSource(string path, string identity, long size, string sha256)
+    private static void DeleteVerifiedSource(QuarantineManifestEntry entry)
     {
         WindowsSecureFileApi api = new();
-        using SafeFileHandle held = api.Open(new SecureFileOpenRequest(path, SecureFileAccess.Read | SecureFileAccess.Delete | SecureFileAccess.Attributes, FileShare.Read, SecureFileDisposition.OpenExisting, SecureFileOpenOptions.OpenReparsePoint | SecureFileOpenOptions.Sequential))
-            ?? throw new FileNotFoundException("The cleanup source is missing.", path);
+        using SafeFileHandle held = api.Open(new SecureFileOpenRequest(entry.SourcePath, SecureFileAccess.Read | SecureFileAccess.Delete | SecureFileAccess.Attributes, FileShare.Read, SecureFileDisposition.OpenExisting, SecureFileOpenOptions.OpenReparsePoint | SecureFileOpenOptions.Sequential))
+            ?? throw new FileNotFoundException("The cleanup source is missing.", entry.SourcePath);
+        VerifySource(api, held, entry);
+        api.Delete(held);
+    }
+
+    private static void VerifySource(WindowsSecureFileApi api, SafeFileHandle held, QuarantineManifestEntry entry)
+    {
         SecureFileMetadata metadata = api.GetMetadata(held);
         FileEvidence evidence = FileEvidence.Read(held);
-        if (metadata.IsDirectory || metadata.IsReparsePoint || !CleanupPlanner.PathEquals(WindowsCleanupProbe.FinalPath(held), path) || evidence.Identity != identity || evidence.Size != size || evidence.Sha256 != sha256)
+        if (metadata.IsDirectory || metadata.IsReparsePoint || !CleanupPlanner.PathEquals(WindowsCleanupProbe.FinalPath(held), entry.SourcePath)
+            || evidence.Identity != entry.PreIdentity || evidence.Size != entry.Size || evidence.Sha256 != entry.Sha256)
             throw new IOException("The cleanup source identity or content changed.");
-        api.Delete(held);
+        if (!MetadataMatches(entry.SourcePath, CleanupEntryKind.File, entry.Metadata))
+            throw new IOException("The cleanup source metadata changed; the published backup metadata was retained.");
     }
 
     private static QuarantineManifest ReadWalStrict(string path, bool requireCommitted, out string headerSha256)
@@ -499,8 +678,7 @@ public sealed class QuarantineTransaction
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or CleanupPlanException or System.ComponentModel.Win32Exception)
             {
-                QuarantineFailure failure = Classify(exception);
-                manifestEntries[index] = entry with { State = QuarantineEntryState.Failed, Failure = failure, FailureReason = exception.Message };
+                manifestEntries[index] = FailedEntry(entry, exception);
                 recoverable = manifestEntries.Take(index).Any(value => value.State == QuarantineEntryState.Stored)
                     || File.Exists(entry.DestinationPath)
                     || Directory.Exists(entry.DestinationPath)
@@ -522,13 +700,13 @@ public sealed class QuarantineTransaction
                 WriteAtomic(manifestPath, committedBytes, false);
                 _faults.Boundary("manifest:committed");
             }
-            catch (IOException)
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
                 bool committed = File.Exists(manifestPath) && File.ReadAllBytes(manifestPath).AsSpan().SequenceEqual(committedBytes);
                 if (!committed)
                 {
                     finalState = QuarantineTransactionState.Recoverable;
-                    final = final with { State = finalState };
+                    final = final with { State = finalState, FailureReason = TransactionFailure(exception) };
                     PersistWal(walPath, final);
                 }
             }
@@ -537,7 +715,7 @@ public sealed class QuarantineTransaction
         {
             PersistWal(walPath, final);
         }
-        return Task.FromResult(new QuarantineResult(finalState, manifestPath, final, manifestEntries.Select(entry => new QuarantineEntryResult(entry.RelativePath, entry.State, entry.Failure, entry.FailureReason)).ToArray()));
+        return Task.FromResult(new QuarantineResult(finalState, manifestPath, final, EntryResults(manifestEntries)));
     }
 
     public static QuarantineRecoveryState ReadRecovery(string quarantineRoot, string quarantineId)
@@ -551,13 +729,13 @@ public sealed class QuarantineTransaction
             QuarantineManifest committed = QuarantineManifestCodec.ReadStrict(manifestPath);
             if (!string.Equals(committed.QuarantineId, quarantineId, StringComparison.Ordinal) || !CleanupPlanner.PathEquals(committed.QuarantineRoot, root))
                 throw new CleanupManifestException("The committed manifest is not bound to the requested quarantine.");
-            return new QuarantineRecoveryState(quarantineId, committed.State, committed.Entries, true) { GameRoot = committed.GameRoot };
+            return new QuarantineRecoveryState(quarantineId, committed.State, committed.Entries, true) { GameRoot = committed.GameRoot, FailureReason = committed.FailureReason };
         }
         string walPath = Path.Combine(transactionRoot, "transaction.wal.json");
         QuarantineManifest wal = ReadWalStrict(walPath, false, out _);
         if (!string.Equals(wal.QuarantineId, quarantineId, StringComparison.Ordinal) || !CleanupPlanner.PathEquals(wal.QuarantineRoot, root))
             throw new CleanupManifestException("The WAL is not bound to the requested quarantine.");
-        return new QuarantineRecoveryState(quarantineId, wal.State, wal.Entries, false) { GameRoot = wal.GameRoot };
+        return new QuarantineRecoveryState(quarantineId, wal.State, wal.Entries, false) { GameRoot = wal.GameRoot, FailureReason = wal.FailureReason };
     }
 
     public static QuarantineRestoreRecovery ReadRestoreRecovery(QuarantineUndoReference reference)
@@ -853,6 +1031,7 @@ public sealed class QuarantineTransaction
         {
             ApplyTimes(source, entry.Metadata);
             api.Rename(source, entry.DestinationPath, false);
+            ApplyTimes(source, entry.Metadata);
             VerifyMetadata(entry.DestinationPath, entry.Kind, entry.Metadata);
             persistBoundary(QuarantineEntryState.Published, WindowsCleanupProbe.Identity(source));
             _faults.Boundary("entry:moved");
@@ -860,6 +1039,7 @@ public sealed class QuarantineTransaction
         }
 
         string partial = entry.DestinationPath + ".partial";
+        if (!MetadataMatches(entry.SourcePath, CleanupEntryKind.File, entry.Metadata)) throw new CleanupPlanException("The planned source metadata changed before copying.");
         using SafeFileHandle copiedHandle = api.Open(new SecureFileOpenRequest(
             partial,
             SecureFileAccess.Read | SecureFileAccess.Write | SecureFileAccess.Delete | SecureFileAccess.Attributes,
@@ -867,14 +1047,21 @@ public sealed class QuarantineTransaction
             SecureFileDisposition.CreateNew,
             SecureFileOpenOptions.OpenReparsePoint | SecureFileOpenOptions.WriteThrough))
             ?? throw new IOException("The quarantine partial could not be created.");
+        persistBoundary(QuarantineEntryState.Moving, WindowsCleanupProbe.Identity(copiedHandle));
+        _faults.Boundary("entry:partial-created");
         CopyHandle(source, copiedHandle, cancellationToken);
         ApplyTimes(copiedHandle, entry.Metadata);
         FileEvidence copied = FileEvidence.Read(copiedHandle);
         if (copied.Size != entry.Size || copied.Sha256 != entry.Sha256) throw new IOException("The copied quarantine payload did not verify.");
+        _faults.Boundary("entry:before-metadata");
+        ApplyMetadata(partial, CleanupEntryKind.File, entry.Metadata);
         ApplyTimes(copiedHandle, entry.Metadata);
+        VerifyMetadata(partial, CleanupEntryKind.File, entry.Metadata);
+        _faults.Boundary("entry:metadata-applied");
         persistBoundary(QuarantineEntryState.Copied, copied.Identity);
         _faults.Boundary("entry:copied");
         api.Rename(copiedHandle, entry.DestinationPath, false);
+        ApplyTimes(copiedHandle, entry.Metadata);
         if (!CleanupPlanner.PathEquals(WindowsCleanupProbe.FinalPath(copiedHandle), entry.DestinationPath)) throw new IOException("The published quarantine payload escaped its exact destination.");
         FileEvidence published = FileEvidence.Read(copiedHandle);
         if (published.Identity != copied.Identity || published.Size != entry.Size || published.Sha256 != entry.Sha256) throw new IOException("The published quarantine payload identity or content changed.");
@@ -884,7 +1071,7 @@ public sealed class QuarantineTransaction
         if (published.Identity != copied.Identity || published.Size != entry.Size || published.Sha256 != entry.Sha256) throw new IOException("The published quarantine payload changed before source deletion.");
         ApplyTimes(copiedHandle, entry.Metadata);
         VerifyMetadata(entry.DestinationPath, CleanupEntryKind.File, entry.Metadata);
-        if (!string.Equals(WindowsCleanupProbe.Identity(source), entry.PreIdentity, StringComparison.Ordinal)) throw new CleanupPlanException("The source identity changed before deletion.");
+        VerifySource(api, source, entry);
         api.Delete(source);
         return copied.Identity;
     }
@@ -1193,11 +1380,10 @@ public sealed class QuarantineTransaction
     private static QuarantineFailure Classify(Exception exception)
     {
         if (exception is UnauthorizedAccessException) return QuarantineFailure.AccessDenied;
-        if (exception is System.ComponentModel.Win32Exception native)
-        {
-            if (native.NativeErrorCode == 5) return QuarantineFailure.AccessDenied;
-            if (native.NativeErrorCode is 32 or 33) return QuarantineFailure.Locked;
-        }
+        int? nativeError = NativeError(exception);
+        if (nativeError == 5) return QuarantineFailure.AccessDenied;
+        if (nativeError is 32 or 33) return QuarantineFailure.Locked;
+        if (nativeError is 80 or 183) return QuarantineFailure.Conflict;
         if (exception is CleanupPlanException plan)
         {
             if (plan.Message.Contains("identity", StringComparison.OrdinalIgnoreCase)) return QuarantineFailure.IdentityChanged;
@@ -1205,9 +1391,15 @@ public sealed class QuarantineTransaction
             if (plan.Message.Contains("reparse", StringComparison.OrdinalIgnoreCase)) return QuarantineFailure.ReparsePoint;
         }
         if (exception is FileNotFoundException or DirectoryNotFoundException) return QuarantineFailure.Missing;
-        if (exception is SecureFileOpenException secure && secure.NativeError is 32 or 33) return QuarantineFailure.Locked;
-        if (exception is IOException io && (io.HResult & 0xffff) is 32 or 33) return QuarantineFailure.Locked;
         return QuarantineFailure.IoFailure;
+    }
+
+    private static int? NativeError(Exception exception)
+    {
+        if (exception is SecureFileOpenException secure) return secure.NativeError;
+        if (exception is System.ComponentModel.Win32Exception native) return native.NativeErrorCode;
+        if (((uint)exception.HResult & 0xffff0000u) == 0x80070000u) return exception.HResult & 0xffff;
+        return exception.InnerException is null ? null : NativeError(exception.InnerException);
     }
 
     private static FileAttributes? AttributesOrMissing(string path)
@@ -1331,7 +1523,8 @@ public sealed class QuarantineTransaction
                 || !Enum.IsDefined(entry.State) || !Enum.IsDefined(entry.Failure))
                 throw new CleanupManifestException("The cleanup entry state identity is invalid.");
             QuarantineManifestEntry original = header.Entries[entry.Order];
-            if (entry with { State = original.State, PostIdentity = original.PostIdentity, Failure = original.Failure, FailureReason = original.FailureReason } != original)
+            if (entry with { State = original.State, PostIdentity = original.PostIdentity, Failure = original.Failure, FailureReason = original.FailureReason,
+                NativeErrorCode = original.NativeErrorCode, FailureHResult = original.FailureHResult } != original)
                 throw new CleanupManifestException("The cleanup entry state changed immutable file evidence.");
             if (entry.State is QuarantineEntryState.Copied or QuarantineEntryState.Published or QuarantineEntryState.Stored && entry.PostIdentity.Length == 0)
                 throw new CleanupManifestException("The cleanup entry state is missing its published identity.");

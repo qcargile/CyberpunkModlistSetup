@@ -69,6 +69,13 @@ public sealed class CleanupVisualAcceptance
         Capture("custom-dlss", basis with { GameFileHashesChecked = true, PreservedDlssFiles = 6 }, false, 1280, 800);
         Capture("cleanup-compact", dirty, false, 760, 800);
         Capture("cleanup-recovery", dirty with { PendingCleanup = true, ReadyForHandoff = false, RecoveryDetail = "The previous cleanup was interrupted. Continue with its recorded backup." }, false, 1280, 800);
+        PreparationSnapshot failed = dirty with
+        {
+            PendingCleanup = true, ReadyForHandoff = false,
+            CleanupFailure = "Could not preserve CleanSlate_Quarantine\\2026-10-28_004428\\archive\\pc\\mod\\example.archive. The file is being used by another process. Windows error 32.\nClose the application using this file, then retry cleanup. Saved files are retained."
+        };
+        Capture("cleanup-failed", failed, false, 1280, 800);
+        Capture("cleanup-failed-narrow", failed, false, 640, 700);
         Capture("game-selection", basis, false, 1280, 800, "game");
         Capture("wabbajack-handoff", basis, false, 1280, 800, "wabbajack");
         VerifyClose(false);

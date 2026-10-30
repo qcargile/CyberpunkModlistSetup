@@ -17,6 +17,7 @@ public sealed record PreparationSnapshot
     public IReadOnlyList<PreparationCheck> Checks { get; init; } = [];
     public IReadOnlyList<CleanupItemLabel> CleanupItems { get; init; } = [];
     public bool PendingCleanup { get; init; }
+    public string CleanupFailure { get; init; } = "";
     public bool CleanupIssue { get; init; }
     public string CleanupReferenceDetail { get; init; } = "";
     public bool GameFileHashesChecked { get; init; }

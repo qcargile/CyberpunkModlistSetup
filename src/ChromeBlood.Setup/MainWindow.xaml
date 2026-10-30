@@ -118,6 +118,7 @@
                                                 <StackPanel Grid.Column="1">
                                                     <TextBlock x:Name="CleanupStatus" Text="{Binding CleanupTitle}" FontFamily="{StaticResource DisplayFont}" FontSize="46" FontWeight="Bold" TextWrapping="Wrap" Style="{StaticResource CleanupStatusText}" AutomationProperties.LiveSetting="Polite"/>
                                                     <TextBlock Text="{Binding CleanupDetail}" FontSize="15" Foreground="{DynamicResource ChromeBrush}" TextWrapping="Wrap" Margin="0,9,0,0"/>
+                                                    <TextBlock Text="{Binding CleanupFailure}" FontSize="13" Foreground="{DynamicResource ChromeBrush}" TextWrapping="Wrap" Margin="0,16,0,0" Visibility="{Binding HasCleanupFailure, Converter={StaticResource VisibleWhenTrue}}" AutomationProperties.LiveSetting="Polite"/>
                                                     <TextBlock Text="Removed files are backed up. Saves are kept." FontSize="13" Foreground="{DynamicResource MutedBrush}" TextWrapping="Wrap" Margin="0,16,0,0"/>
                                                 </StackPanel>
                                             </Grid>

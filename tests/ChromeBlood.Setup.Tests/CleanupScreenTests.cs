@@ -251,6 +251,91 @@ public sealed class CleanupScreenTests
     }
 
     [TestMethod]
+    public void FailedCleanupShowsLatestErrorAndKeepsRetryUnderReview()
+    {
+        PreparationViewModel model = Model(Snapshot());
+        PreparationSnapshot pending = Snapshot() with { PendingCleanup = true, ReadyForHandoff = false };
+        model.ApplyPreparationResult(new(pending, false, false, "Cannot move archive\\locked.archive: Windows error 32.", @"C:\Backups\Cyberpunk"));
+        Assert.IsTrue(model.HasCleanupFailure);
+        Assert.AreEqual("Cleanup needs attention", model.CleanupTitle);
+        Assert.AreEqual("Retry cleanup", model.PrimaryText);
+        StringAssert.Contains(model.CleanupFailure, "locked.archive");
+        Assert.IsTrue(model.HasBackup);
+        Assert.AreEqual(@"C:\Backups\Cyberpunk", model.BackupRoot);
+        Assert.IsFalse(model.WabbajackCommand.CanExecute(null));
+        Assert.IsFalse(model.ContinueWithoutCleanupCommand.CanExecute(null));
+        model.PrimaryCommand.Execute(null);
+        Assert.IsTrue(model.IsReview);
+        Assert.IsFalse(model.IsBusy);
+        Assert.AreEqual("Retry the saved cleanup", model.ReviewTitle);
+        model.ApplyPreparationResult(new(pending, false, false, "Cannot move archive\\locked.archive: insufficient space."));
+        Assert.IsFalse(model.IsReview);
+        StringAssert.Contains(model.CleanupFailure, "insufficient space");
+        Assert.IsFalse(model.CleanupFailure.Contains("error 32", StringComparison.Ordinal));
+        Assert.AreEqual(@"C:\Backups\Cyberpunk", model.BackupRoot);
+    }
+
+    [TestMethod]
+    public void ReopenedCleanupRetainsItsFailureUntilRecoveryCompletes()
+    {
+        PreparationViewModel model = Model(Snapshot() with
+        {
+            PendingCleanup = true, ReadyForHandoff = false,
+            CleanupFailure = "Cannot move CleanSlate_Quarantine\\old: access denied. Windows error 5."
+        });
+        Assert.IsTrue(model.HasCleanupFailure);
+        StringAssert.Contains(model.CleanupFailure, "CleanSlate_Quarantine");
+        Assert.AreEqual("Retry cleanup", model.PrimaryText);
+        model.ReviewCleanupCommand.Execute(null);
+        model.ApplyPreparationResult(new(Snapshot() with { CleanupItems = [], GameFileHashesChecked = true }, true, false, "Cleanup finished."));
+        Assert.IsFalse(model.HasCleanupFailure);
+        Assert.AreEqual("", model.CleanupFailure);
+        Assert.IsFalse(model.CleanGame);
+        Assert.AreEqual("Your game is clean", model.CleanupTitle);
+        Assert.AreEqual("Continue to Wabbajack", model.PrimaryText);
+        Assert.IsTrue(model.WabbajackCommand.CanExecute(null));
+    }
+
+    [TestMethod]
+    public void CancelledCleanupRemainsResumableWithoutClaimingFailureOrCompletion()
+    {
+        PreparationViewModel model = Model(Snapshot());
+        model.ApplyPreparationResult(new(Snapshot() with { PendingCleanup = true, ReadyForHandoff = false },
+            false, true, "Preparation stopped. Preserved files are retained."));
+        Assert.IsFalse(model.HasCleanupFailure);
+        Assert.AreEqual("Finish your cleanup", model.CleanupTitle);
+        Assert.AreEqual("Resume cleanup", model.PrimaryText);
+        Assert.IsFalse(model.WabbajackCommand.CanExecute(null));
+        Assert.IsFalse(model.ContinueWithoutCleanupCommand.CanExecute(null));
+    }
+
+    [TestMethod]
+    public void UnreadableRecoveryStateShowsItsErrorWithoutAllowingCleanupOrHandoff()
+    {
+        PreparationViewModel model = Model(Snapshot() with
+        {
+            CleanupIssue = true, ReadyForHandoff = false,
+            CleanupFailure = "Cleanup could not be inspected: The cleanup WAL is invalid."
+        });
+        Assert.IsTrue(model.HasCleanupFailure);
+        StringAssert.Contains(model.CleanupFailure, "WAL is invalid");
+        Assert.AreEqual("Check again", model.PrimaryText);
+        Assert.IsFalse(model.CleanupDetail.Contains("Close the game", StringComparison.Ordinal));
+        Assert.IsFalse(model.ReviewCleanupCommand.CanExecute(null));
+        Assert.IsFalse(model.WabbajackCommand.CanExecute(null));
+        Assert.IsFalse(model.ContinueWithoutCleanupCommand.CanExecute(null));
+    }
+
+    [TestMethod]
+    public void ChoosingAnotherInstallationDoesNotCarryItsPreviousCleanupError()
+    {
+        PreparationViewModel model = Model(Snapshot() with { PendingCleanup = true, ReadyForHandoff = false, CleanupFailure = "Original folder failed." });
+        model.UpdateSnapshot(Snapshot() with { SelectedGameRoot = @"D:\Games\Cyberpunk 2077" });
+        Assert.IsFalse(model.HasCleanupFailure);
+        Assert.AreEqual("", model.CleanupFailure);
+    }
+
+    [TestMethod]
     public void MissingComponentsStaySelectedAndManualRequirementsStaySeparate()
     {
         PreparationViewModel model = Model(Snapshot() with

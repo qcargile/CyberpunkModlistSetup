@@ -15,6 +15,515 @@ public sealed class QuarantineTransactionTests
     private static readonly string[] ExpectedBoundaries = ["wal:staged", "entry:moving", "entry:moved", "entry:stored", "manifest:before-commit", "manifest:committed"];
 
     [TestMethod]
+    [DataRow("none")]
+    [DataRow("entry:before-metadata")]
+    [DataRow("entry:metadata-applied")]
+    [DataRow("entry:published")]
+    public async Task CrossVolumeCopy_PreservesExplicitFileDaclAndAttributesAcrossMetadataInterruption(string boundary)
+    {
+        using TemporaryDirectory temporary = new();
+        (CleanupPlan plan, string source) = CreateFileMetadataPlan(temporary, "copy-metadata");
+        RecordingCleanupFaults faults = new() { CrossVolume = true, ThrowAt = boundary == "none" ? null : boundary };
+        QuarantineResult initial = await ExecuteTestAsync(new QuarantineTransaction(faults), plan, "q-copy-metadata");
+        Assert.AreEqual(boundary == "none" ? QuarantineTransactionState.Committed : QuarantineTransactionState.Recoverable, initial.State,
+            string.Join("; ", initial.Entries.Select(value => value.Reason)));
+        if (boundary != "none") Assert.AreEqual("metadata payload", File.ReadAllText(source));
+        if (boundary is "entry:before-metadata" or "entry:metadata-applied")
+        {
+            bool matches = QuarantineTransaction.MetadataMatchesForTests(initial.Manifest.Entries.Single().DestinationPath + ".partial", CleanupEntryKind.File, plan.Entries.Single().Metadata);
+            Assert.AreEqual(boundary == "entry:metadata-applied", matches);
+        }
+        for (int retry = 0; retry < 2; retry++)
+        {
+            QuarantineResult recovered = await new QuarantineTransaction(new RecordingCleanupFaults { CrossVolume = true }).RecoverRecordedAsync(
+                JournalFor(plan, "q-copy-metadata"), "q-copy-metadata", CleanupAuthorizationCodec.PlanSha256(plan), CancellationToken.None);
+            Assert.AreEqual(QuarantineTransactionState.Committed, recovered.State, string.Join("; ", recovered.Entries.Select(value => value.Reason)));
+            string destination = recovered.Manifest.Entries.Single().DestinationPath;
+            Assert.AreEqual("metadata payload", File.ReadAllText(destination));
+            Assert.AreEqual(FileAttributes.Hidden | FileAttributes.Archive, File.GetAttributes(destination));
+            Assert.IsTrue(QuarantineTransaction.MetadataMatchesForTests(destination, CleanupEntryKind.File, plan.Entries.Single().Metadata));
+            Assert.IsFalse(File.Exists(source));
+        }
+    }
+
+    [TestMethod]
+    [DataRow("none")]
+    [DataRow("entry:before-metadata")]
+    [DataRow("entry:metadata-applied")]
+    public async Task PublishedMetadataRecovery_RepairsLegacyCopyOnlyWithVerifiedOriginalAcrossInterruption(string boundary)
+    {
+        using TemporaryDirectory temporary = new();
+        (CleanupPlan plan, string source, string destination) = await CreatePublishedMetadataMismatch(temporary);
+        if (boundary != "none")
+        {
+            QuarantineResult interrupted = await new QuarantineTransaction(new RecordingCleanupFaults { ThrowAt = boundary }).RecoverRecordedAsync(
+                JournalFor(plan, "q-legacy-metadata"), "q-legacy-metadata", CleanupAuthorizationCodec.PlanSha256(plan), CancellationToken.None);
+            Assert.AreEqual(QuarantineTransactionState.Recoverable, interrupted.State);
+            Assert.AreEqual("metadata payload", File.ReadAllText(source));
+            Assert.AreEqual("metadata payload", File.ReadAllText(destination));
+            Assert.AreEqual(boundary == "entry:metadata-applied", QuarantineTransaction.MetadataMatchesForTests(destination, CleanupEntryKind.File, plan.Entries.Single().Metadata));
+        }
+        for (int retry = 0; retry < 2; retry++)
+        {
+            QuarantineResult recovered = await new QuarantineTransaction().RecoverRecordedAsync(JournalFor(plan, "q-legacy-metadata"), "q-legacy-metadata", CleanupAuthorizationCodec.PlanSha256(plan), CancellationToken.None);
+            Assert.AreEqual(QuarantineTransactionState.Committed, recovered.State, string.Join("; ", recovered.Entries.Select(value => value.Reason)));
+            Assert.IsTrue(QuarantineTransaction.MetadataMatchesForTests(destination, CleanupEntryKind.File, plan.Entries.Single().Metadata));
+            Assert.AreEqual("metadata payload", File.ReadAllText(destination));
+            Assert.IsFalse(File.Exists(source));
+        }
+    }
+
+    [TestMethod]
+    [DataRow("source-missing")]
+    [DataRow("source-content")]
+    [DataRow("source-identity")]
+    [DataRow("source-metadata")]
+    [DataRow("destination-identity")]
+    [DataRow("destination-identity-missing")]
+    public async Task PublishedMetadataRecovery_PreservesMismatchedBackupWithoutAuthoritativeSourceAndDestination(string change)
+    {
+        using TemporaryDirectory temporary = new();
+        (CleanupPlan plan, string source, string destination) = await CreatePublishedMetadataMismatch(temporary);
+        if (change == "source-missing") File.Delete(source);
+        else if (change == "source-content")
+        {
+            using FileStream stream = new(source, FileMode.Open, FileAccess.Write, FileShare.Read);
+            stream.SetLength(0);
+            stream.Write("different source content"u8);
+        }
+        else if (change == "source-metadata") File.SetAttributes(source, FileAttributes.Archive);
+        else if (change is "source-identity" or "destination-identity")
+        {
+            string path = change == "source-identity" ? source : destination;
+            File.Move(path, path + ".retained");
+            File.Copy(path + ".retained", path);
+        }
+        else
+        {
+            string walPath = Path.Combine(plan.QuarantineRoot, "q-legacy-metadata", "transaction.wal.json");
+            QuarantineManifest wal = ContractJson.Deserialize<QuarantineManifest>(File.ReadAllBytes(walPath));
+            QuarantineTransaction.WriteAtomic(walPath, ContractJson.SerializeUtf8(wal with { Entries = wal.Entries.Select(entry => entry with { PostIdentity = string.Empty }).ToArray() }));
+        }
+        CleanupPathMetadata before = WindowsCleanupProbe.ReadMetadataForTests(destination, false);
+        for (int retry = 0; retry < 2; retry++)
+        {
+            QuarantineResult rejected = await new QuarantineTransaction().RecoverRecordedAsync(JournalFor(plan, "q-legacy-metadata"), "q-legacy-metadata", CleanupAuthorizationCodec.PlanSha256(plan), CancellationToken.None);
+            Assert.AreEqual(QuarantineTransactionState.Recoverable, rejected.State);
+            Assert.IsFalse(File.Exists(rejected.ManifestPath));
+            Assert.AreEqual("metadata payload", File.ReadAllText(destination));
+            CleanupPathMetadata after = WindowsCleanupProbe.ReadMetadataForTests(destination, false);
+            Assert.AreEqual(before.Attributes, after.Attributes);
+            Assert.AreEqual(before.SecuritySddl, after.SecuritySddl);
+            Assert.AreEqual(before.CreationTimeUtc, after.CreationTimeUtc);
+            Assert.AreEqual(before.LastWriteTimeUtc, after.LastWriteTimeUtc);
+            if (change != "source-missing") Assert.IsTrue(File.Exists(source));
+        }
+    }
+
+    [TestMethod]
+    [DataRow("entry:before-metadata")]
+    [DataRow("entry:metadata-applied")]
+    public async Task PublishedMetadataRecovery_RechecksSourceAndBackupMetadataAtCommitBoundary(string boundary)
+    {
+        using TemporaryDirectory temporary = new();
+        (CleanupPlan plan, string source, string destination) = await CreatePublishedMetadataMismatch(temporary);
+        CleanupPathMetadata before = WindowsCleanupProbe.ReadMetadataForTests(destination, false);
+        RecordingCleanupFaults faults = new() { OnBoundary = current =>
+        {
+            if (current != boundary) return;
+            File.SetAttributes(boundary == "entry:before-metadata" ? source : destination, FileAttributes.Archive);
+        } };
+        QuarantineResult rejected = await new QuarantineTransaction(faults).RecoverRecordedAsync(JournalFor(plan, "q-legacy-metadata"), "q-legacy-metadata", CleanupAuthorizationCodec.PlanSha256(plan), CancellationToken.None);
+        Assert.AreEqual(QuarantineTransactionState.Recoverable, rejected.State);
+        Assert.AreEqual("metadata payload", File.ReadAllText(source));
+        Assert.AreEqual("metadata payload", File.ReadAllText(destination));
+        Assert.IsFalse(File.Exists(rejected.ManifestPath));
+        if (boundary == "entry:before-metadata")
+        {
+            CleanupPathMetadata after = WindowsCleanupProbe.ReadMetadataForTests(destination, false);
+            Assert.AreEqual(before.Attributes, after.Attributes);
+            Assert.AreEqual(before.SecuritySddl, after.SecuritySddl);
+        }
+    }
+
+    [TestMethod]
+    public async Task Recovery_RetainsLockedFailureAcrossRepeatedRetriesAndClearsItAfterRelease()
+    {
+        using TemporaryDirectory temporary = new();
+        (CleanupPlan plan, string source, _) = CreatePlan(temporary, "locked payload", "repeated-lock");
+        UndoJournal journal = JournalFor(plan, "q-repeated-lock");
+        using (FileStream held = new(source, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            QuarantineResult initial = await ExecuteTestAsync(new QuarantineTransaction(), plan, "q-repeated-lock");
+            Assert.AreEqual(QuarantineFailure.Locked, initial.Entries.Single().Failure);
+            Assert.AreEqual(32, initial.Entries.Single().NativeErrorCode);
+            for (int retry = 0; retry < 2; retry++)
+            {
+                QuarantineResult failed = await new QuarantineTransaction().RecoverRecordedAsync(journal, "q-repeated-lock", CleanupAuthorizationCodec.PlanSha256(plan), CancellationToken.None);
+                QuarantineEntryResult entry = failed.Entries.Single();
+                Assert.AreEqual(QuarantineTransactionState.Recoverable, failed.State);
+                Assert.AreEqual(QuarantineFailure.Locked, entry.Failure);
+                Assert.IsFalse(string.IsNullOrWhiteSpace(entry.Reason));
+                Assert.AreEqual(32, entry.NativeErrorCode);
+                Assert.IsNotNull(entry.FailureHResult);
+                QuarantineManifestEntry persisted = QuarantineTransaction.ReadRecovery(plan.QuarantineRoot, "q-repeated-lock").Entries.Single();
+                Assert.AreEqual(entry.Reason, persisted.FailureReason);
+                Assert.AreEqual(entry.NativeErrorCode, persisted.NativeErrorCode);
+                Assert.IsTrue(File.Exists(source));
+                Assert.IsFalse(File.Exists(failed.ManifestPath));
+            }
+        }
+        QuarantineResult recovered = await new QuarantineTransaction().RecoverRecordedAsync(journal, "q-repeated-lock", CleanupAuthorizationCodec.PlanSha256(plan), CancellationToken.None);
+        Assert.AreEqual(QuarantineTransactionState.Committed, recovered.State);
+        Assert.IsNull(recovered.Entries.Single().Reason);
+        Assert.IsNull(recovered.Entries.Single().NativeErrorCode);
+        Assert.IsNull(recovered.Entries.Single().FailureHResult);
+        QuarantineResult repeated = await new QuarantineTransaction().RecoverRecordedAsync(journal, "q-repeated-lock", CleanupAuthorizationCodec.PlanSha256(plan), CancellationToken.None);
+        Assert.AreEqual(QuarantineTransactionState.Committed, repeated.State);
+        Assert.AreEqual("locked payload", File.ReadAllText(repeated.Manifest.Entries.Single().DestinationPath));
+    }
+
+    [TestMethod]
+    public async Task Recovery_ReportsNativeAccessDeniedAndContinuesAfterPermissionRepair()
+    {
+        using TemporaryDirectory temporary = new();
+        (CleanupPlan plan, string source, _) = CreatePlan(temporary, "protected payload", "permission");
+        string original = new FileInfo(source).GetAccessControl(AccessControlSections.Access).GetSecurityDescriptorSddlForm(AccessControlSections.Access);
+        FileSecurity denied = new FileInfo(source).GetAccessControl(AccessControlSections.Access);
+        denied.AddAccessRule(new FileSystemAccessRule(System.Security.Principal.WindowsIdentity.GetCurrent().User!, FileSystemRights.ReadData, AccessControlType.Deny));
+        try
+        {
+            new FileInfo(source).SetAccessControl(denied);
+            QuarantineResult result = await ExecuteTestAsync(new QuarantineTransaction(), plan, "q-permission");
+            Assert.AreEqual(QuarantineFailure.AccessDenied, result.Entries.Single().Failure);
+            Assert.AreEqual(5, result.Entries.Single().NativeErrorCode);
+            QuarantineResult retry = await new QuarantineTransaction().RecoverRecordedAsync(JournalFor(plan, "q-permission"), "q-permission", CleanupAuthorizationCodec.PlanSha256(plan), CancellationToken.None);
+            Assert.AreEqual(QuarantineFailure.AccessDenied, retry.Entries.Single().Failure);
+            Assert.AreEqual(5, retry.Entries.Single().NativeErrorCode);
+            Assert.IsFalse(string.IsNullOrWhiteSpace(retry.Entries.Single().Reason));
+        }
+        finally
+        {
+            FileSecurity restored = new();
+            restored.SetSecurityDescriptorSddlForm(original, AccessControlSections.Access);
+            new FileInfo(source).SetAccessControl(restored);
+        }
+        QuarantineResult recovered = await new QuarantineTransaction().RecoverRecordedAsync(JournalFor(plan, "q-permission"), "q-permission", CleanupAuthorizationCodec.PlanSha256(plan), CancellationToken.None);
+        Assert.AreEqual(QuarantineTransactionState.Committed, recovered.State, recovered.Entries.Single().Reason);
+        Assert.AreEqual("protected payload", File.ReadAllText(recovered.Manifest.Entries.Single().DestinationPath));
+    }
+
+    [TestMethod]
+    [DataRow(false, "wal:staged")]
+    [DataRow(false, "entry:moving")]
+    [DataRow(false, "entry:moved")]
+    [DataRow(false, "entry:stored")]
+    [DataRow(false, "manifest:before-commit")]
+    [DataRow(false, "manifest:committed")]
+    [DataRow(true, "entry:partial-created")]
+    [DataRow(true, "entry:copied")]
+    [DataRow(true, "entry:published")]
+    public async Task Recovery_ContinuesAfterInterruptionAtDurableBoundaries(bool crossVolume, string boundary)
+    {
+        using TemporaryDirectory temporary = new();
+        (CleanupPlan plan, string source, _) = CreatePlan(temporary, "boundary payload", "boundary");
+        QuarantineTransaction interrupted = new(new RecordingCleanupFaults { CrossVolume = crossVolume, ThrowAt = boundary });
+        if (boundary == "wal:staged")
+            await Assert.ThrowsExactlyAsync<IOException>(() => ExecuteTestAsync(interrupted, plan, "q-boundary"));
+        else
+            await ExecuteTestAsync(interrupted, plan, "q-boundary");
+        QuarantineTransaction recovery = new(new RecordingCleanupFaults { CrossVolume = crossVolume });
+        for (int retry = 0; retry < 2; retry++)
+        {
+            QuarantineResult result = await recovery.RecoverRecordedAsync(JournalFor(plan, "q-boundary"), "q-boundary", CleanupAuthorizationCodec.PlanSha256(plan), CancellationToken.None);
+            Assert.AreEqual(QuarantineTransactionState.Committed, result.State);
+            Assert.AreEqual("boundary payload", File.ReadAllText(result.Manifest.Entries.Single().DestinationPath));
+            Assert.IsFalse(File.Exists(source));
+        }
+    }
+
+    [TestMethod]
+    public async Task Recovery_RetriesCancelledIncompleteCopyOnlyWithRecordedIdentityAndVerifiedSource()
+    {
+        using TemporaryDirectory temporary = new();
+        (CleanupPlan plan, string source, _) = CreatePlan(temporary, "cancelled copy payload", "cancel-copy");
+        using CancellationTokenSource cancellation = new();
+        RecordingCleanupFaults faults = new() { CrossVolume = true, OnBoundary = boundary =>
+        {
+            if (boundary == "entry:partial-created") cancellation.Cancel();
+        } };
+        OwnedCleanupMutationScope scope = OwnedCleanupMutationScope.ForDisposableTest(temporary.Path, plan);
+        await Assert.ThrowsExactlyAsync<OperationCanceledException>(() => new QuarantineTransaction(faults).ExecuteDisposableTestAsync(plan, "q-cancel-copy", JournalFor(plan, "q-cancel-copy"), scope, cancellation.Token));
+        QuarantineManifestEntry entry = QuarantineTransaction.ReadRecovery(plan.QuarantineRoot, "q-cancel-copy").Entries.Single();
+        Assert.AreEqual(QuarantineEntryState.Moving, entry.State);
+        Assert.IsTrue(entry.PostIdentity.Length > 0);
+        Assert.AreEqual(0L, new FileInfo(entry.DestinationPath + ".partial").Length);
+        Assert.AreEqual("cancelled copy payload", File.ReadAllText(source));
+        QuarantineResult recovered = await new QuarantineTransaction(new RecordingCleanupFaults { CrossVolume = true }).RecoverRecordedAsync(JournalFor(plan, "q-cancel-copy"), "q-cancel-copy", CleanupAuthorizationCodec.PlanSha256(plan), CancellationToken.None);
+        Assert.AreEqual(QuarantineTransactionState.Committed, recovered.State);
+        Assert.AreEqual("cancelled copy payload", File.ReadAllText(recovered.Manifest.Entries.Single().DestinationPath));
+        Assert.IsFalse(File.Exists(entry.DestinationPath + ".partial"));
+    }
+
+    [TestMethod]
+    [DataRow("source-missing")]
+    [DataRow("source-changed")]
+    [DataRow("partial-replaced")]
+    public async Task Recovery_RetainsPartialWhenSourceOrPartialEvidenceCannotAuthorizeDeletion(string change)
+    {
+        using TemporaryDirectory temporary = new();
+        (CleanupPlan plan, string source, _) = CreatePlan(temporary, "preserved partial", "unsafe-partial");
+        string boundary = change == "partial-replaced" ? "entry:partial-created" : "entry:copied";
+        QuarantineResult interrupted = await ExecuteTestAsync(new QuarantineTransaction(new RecordingCleanupFaults { CrossVolume = true, ThrowAt = boundary }), plan, "q-unsafe-partial");
+        string partial = interrupted.Manifest.Entries.Single().DestinationPath + ".partial";
+        if (change == "source-missing") File.Delete(source);
+        else if (change == "source-changed") File.WriteAllText(source, "changed source");
+        else
+        {
+            File.Move(partial, partial + ".retained");
+            File.WriteAllText(partial, "unrelated partial");
+        }
+        string retained = File.ReadAllText(partial);
+        for (int retry = 0; retry < 2; retry++)
+        {
+            QuarantineResult rejected = await new QuarantineTransaction().RecoverRecordedAsync(JournalFor(plan, "q-unsafe-partial"), "q-unsafe-partial", CleanupAuthorizationCodec.PlanSha256(plan), CancellationToken.None);
+            Assert.AreEqual(QuarantineTransactionState.Recoverable, rejected.State);
+            Assert.AreEqual(retained, File.ReadAllText(partial));
+            Assert.IsFalse(File.Exists(rejected.ManifestPath));
+        }
+    }
+
+    [TestMethod]
+    [DataRow("missing")]
+    [DataRow("changed")]
+    [DataRow("replaced")]
+    public async Task Recovery_DoesNotCommitPreviouslyStoredPayloadWithoutRecheckingItsEvidence(string change)
+    {
+        using TemporaryDirectory temporary = new();
+        (CleanupPlan plan, _, _) = CreatePlan(temporary, "stored payload", "stored-check");
+        QuarantineResult interrupted = await ExecuteTestAsync(new QuarantineTransaction(new RecordingCleanupFaults { ThrowAt = "manifest:before-commit" }), plan, "q-stored-check");
+        string destination = interrupted.Manifest.Entries.Single().DestinationPath;
+        if (change == "missing") File.Delete(destination);
+        else if (change == "changed") File.WriteAllText(destination, "altered payload");
+        else
+        {
+            File.Move(destination, destination + ".retained");
+            File.Copy(destination + ".retained", destination);
+        }
+        QuarantineResult rejected = await new QuarantineTransaction().RecoverRecordedAsync(JournalFor(plan, "q-stored-check"), "q-stored-check", CleanupAuthorizationCodec.PlanSha256(plan), CancellationToken.None);
+        Assert.AreEqual(QuarantineTransactionState.Recoverable, rejected.State);
+        Assert.IsFalse(File.Exists(rejected.ManifestPath));
+        Assert.IsTrue(rejected.Entries.Single().Failure != QuarantineFailure.None);
+    }
+
+    [TestMethod]
+    public async Task Recovery_RetainsDestinationConflictAcrossRetriesAndResumesAfterExternalRepair()
+    {
+        using TemporaryDirectory temporary = new();
+        (CleanupPlan plan, string source, _) = CreatePlan(temporary, "original payload", "conflict-retry");
+        QuarantineResult interrupted = await ExecuteTestAsync(new QuarantineTransaction(new RecordingCleanupFaults { ThrowAt = "entry:moving" }), plan, "q-conflict-retry");
+        string destination = interrupted.Manifest.Entries.Single().DestinationPath;
+        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+        File.WriteAllText(destination, "unrelated file");
+        for (int retry = 0; retry < 2; retry++)
+        {
+            QuarantineResult rejected = await new QuarantineTransaction().RecoverRecordedAsync(JournalFor(plan, "q-conflict-retry"), "q-conflict-retry", CleanupAuthorizationCodec.PlanSha256(plan), CancellationToken.None);
+            Assert.AreEqual(QuarantineTransactionState.Recoverable, rejected.State);
+            Assert.AreEqual("original payload", File.ReadAllText(source));
+            Assert.AreEqual("unrelated file", File.ReadAllText(destination));
+            Assert.IsFalse(string.IsNullOrWhiteSpace(rejected.Entries.Single().Reason));
+        }
+        File.Move(destination, destination + ".retained");
+        QuarantineResult recovered = await new QuarantineTransaction().RecoverRecordedAsync(JournalFor(plan, "q-conflict-retry"), "q-conflict-retry", CleanupAuthorizationCodec.PlanSha256(plan), CancellationToken.None);
+        Assert.AreEqual(QuarantineTransactionState.Committed, recovered.State, recovered.Entries.Single().Reason);
+        Assert.AreEqual("unrelated file", File.ReadAllText(destination + ".retained"));
+    }
+
+    [TestMethod]
+    public async Task Recovery_RetainsManifestPublicationErrorUntilDestinationIsRepaired()
+    {
+        using TemporaryDirectory temporary = new();
+        (CleanupPlan plan, _, _) = CreatePlan(temporary, "publication payload", "publication-error");
+        string manifestPath = Path.Combine(plan.QuarantineRoot, "q-publication-error", "quarantine.json");
+        RecordingCleanupFaults faults = new() { OnBoundary = boundary =>
+        {
+            if (boundary == "manifest:before-commit") Directory.CreateDirectory(manifestPath);
+        } };
+        QuarantineResult interrupted = await ExecuteTestAsync(new QuarantineTransaction(faults), plan, "q-publication-error");
+        Assert.AreEqual(QuarantineTransactionState.Recoverable, interrupted.State);
+        Assert.IsFalse(string.IsNullOrWhiteSpace(interrupted.Manifest.FailureReason));
+        Assert.AreEqual(interrupted.Manifest.FailureReason, QuarantineTransaction.ReadRecovery(plan.QuarantineRoot, "q-publication-error").FailureReason);
+        QuarantineResult retry = await new QuarantineTransaction().RecoverRecordedAsync(JournalFor(plan, "q-publication-error"), "q-publication-error", CleanupAuthorizationCodec.PlanSha256(plan), CancellationToken.None);
+        Assert.AreEqual(QuarantineTransactionState.Recoverable, retry.State);
+        Assert.IsFalse(string.IsNullOrWhiteSpace(retry.Manifest.FailureReason));
+        Assert.IsTrue(Directory.Exists(manifestPath));
+        Directory.Delete(manifestPath);
+        QuarantineResult recovered = await new QuarantineTransaction().RecoverRecordedAsync(JournalFor(plan, "q-publication-error"), "q-publication-error", CleanupAuthorizationCodec.PlanSha256(plan), CancellationToken.None);
+        Assert.AreEqual(QuarantineTransactionState.Committed, recovered.State);
+        Assert.IsNull(recovered.Manifest.FailureReason);
+        Assert.AreEqual("publication payload", File.ReadAllText(recovered.Manifest.Entries.Single().DestinationPath));
+    }
+
+    [TestMethod]
+    [DataRow("missing")]
+    [DataRow("malformed")]
+    [DataRow("wrong-quarantine")]
+    [DataRow("wrong-root-identity")]
+    public async Task Recovery_RejectsMissingMalformedOrUnboundWalAndRetainsSource(string change)
+    {
+        using TemporaryDirectory temporary = new();
+        (CleanupPlan plan, string source, _) = CreatePlan(temporary, "journal payload", "bad-wal");
+        await ExecuteTestAsync(new QuarantineTransaction(new RecordingCleanupFaults { ThrowAt = "entry:moving" }), plan, "q-bad-wal");
+        string wal = Path.Combine(plan.QuarantineRoot, "q-bad-wal", "transaction.wal.json");
+        if (change == "missing") File.Move(wal, wal + ".retained");
+        else if (change == "malformed") File.WriteAllText(wal, "{truncated journal");
+        else
+        {
+            QuarantineManifest manifest = ContractJson.Deserialize<QuarantineManifest>(File.ReadAllBytes(wal));
+            if (change == "wrong-quarantine")
+                manifest = manifest with { QuarantineId = "another-quarantine", Entries = manifest.Entries.Select(entry => entry with
+                { DestinationPath = Path.Combine(plan.QuarantineRoot, "another-quarantine", "files", entry.RelativePath) }).ToArray() };
+            else manifest = manifest with { GameRootIdentity = "another-root" };
+            QuarantineTransaction.WriteAtomic(wal, ContractJson.SerializeUtf8(manifest));
+        }
+        byte[]? retained = File.Exists(wal) ? File.ReadAllBytes(wal) : null;
+        for (int retry = 0; retry < 2; retry++)
+        {
+            await Assert.ThrowsExactlyAsync<CleanupManifestException>(() => new QuarantineTransaction().RecoverRecordedAsync(JournalFor(plan, "q-bad-wal"), "q-bad-wal", CleanupAuthorizationCodec.PlanSha256(plan), CancellationToken.None));
+            Assert.AreEqual("journal payload", File.ReadAllText(source));
+            if (retained is not null) CollectionAssert.AreEqual(retained, File.ReadAllBytes(wal));
+        }
+    }
+
+    [TestMethod]
+    [DataRow("directory:deleted")]
+    [DataRow("manifest:before-commit")]
+    public async Task Recovery_CompletesNestedRetainedCleanupFolderWithExactDirectoryMetadata(string boundary)
+    {
+        using TemporaryDirectory temporary = new();
+        string game = Path.Combine(temporary.Path, "game-nested-backup");
+        string vault = Path.Combine(temporary.Path, "vault-nested-backup");
+        string previous = Path.Combine(game, "CleanSlate_Quarantine", "2026-10-28_004428");
+        string nested = Path.Combine(previous, "archive", "pc", "mod");
+        Directory.CreateDirectory(nested);
+        Directory.CreateDirectory(vault);
+        File.WriteAllText(Path.Combine(previous, "transaction.json"), "previous cleanup journal");
+        File.WriteAllText(Path.Combine(nested, "old.archive"), "previous mod payload");
+        CleanupPolicy policy = CleanupPolicy.FromIndexedTargets("disposable-file-inventory", [new("CleanSlate_Quarantine", true, "retained cleanup folder", CleanupTargetExpansion.Exact)]);
+        CleanupPlan plan = new CleanupPlanner().Plan(game, vault, policy);
+        QuarantineResult interrupted = await ExecuteTestAsync(new QuarantineTransaction(new RecordingCleanupFaults { ThrowAt = boundary }), plan, "q-nested-backup");
+        Assert.AreEqual(QuarantineTransactionState.Recoverable, interrupted.State);
+        for (int retry = 0; retry < 2; retry++)
+        {
+            QuarantineResult recovered = await new QuarantineTransaction().RecoverRecordedAsync(JournalFor(plan, "q-nested-backup"), "q-nested-backup", CleanupAuthorizationCodec.PlanSha256(plan), CancellationToken.None);
+            Assert.AreEqual(QuarantineTransactionState.Committed, recovered.State, string.Join("; ", recovered.Entries.Select(value => value.Reason)));
+            Assert.IsFalse(Directory.Exists(Path.Combine(game, "CleanSlate_Quarantine")));
+            foreach (QuarantineManifestEntry entry in recovered.Manifest.Entries)
+                Assert.IsTrue(QuarantineTransaction.MetadataMatchesForTests(entry.DestinationPath, entry.Kind, entry.Metadata), entry.RelativePath);
+            string files = Path.Combine(vault, "q-nested-backup", "files", "CleanSlate_Quarantine", "2026-10-28_004428");
+            Assert.AreEqual("previous cleanup journal", File.ReadAllText(Path.Combine(files, "transaction.json")));
+            Assert.AreEqual("previous mod payload", File.ReadAllText(Path.Combine(files, "archive", "pc", "mod", "old.archive")));
+        }
+    }
+
+    [TestMethod]
+    public async Task Recovery_ReadsLegacyCanonicalWalWithoutOptionalNativeDiagnostics()
+    {
+        using TemporaryDirectory temporary = new();
+        (CleanupPlan plan, string source, _) = CreatePlan(temporary, "legacy journal payload", "legacy-fields");
+        await ExecuteTestAsync(new QuarantineTransaction(new RecordingCleanupFaults { ThrowAt = "entry:moving" }), plan, "q-legacy-fields");
+        string wal = Path.Combine(plan.QuarantineRoot, "q-legacy-fields", "transaction.wal.json");
+        JsonNode document = JsonNode.Parse(File.ReadAllBytes(wal))!;
+        document.AsObject().Remove("failureReason");
+        foreach (JsonNode? entry in document["entries"]!.AsArray())
+        {
+            entry!.AsObject().Remove("nativeErrorCode");
+            entry.AsObject().Remove("failureHResult");
+        }
+        QuarantineTransaction.WriteAtomic(wal, ContractJson.SerializeUtf8(document));
+        QuarantineRecoveryState recovery = QuarantineTransaction.ReadRecovery(plan.QuarantineRoot, "q-legacy-fields");
+        Assert.IsNull(recovery.Entries.Single().NativeErrorCode);
+        Assert.IsNull(recovery.Entries.Single().FailureHResult);
+        Assert.AreEqual("fault", recovery.Entries.Single().FailureReason);
+        QuarantineResult recovered = await new QuarantineTransaction().RecoverRecordedAsync(JournalFor(plan, "q-legacy-fields"), "q-legacy-fields", CleanupAuthorizationCodec.PlanSha256(plan), CancellationToken.None);
+        Assert.AreEqual(QuarantineTransactionState.Committed, recovered.State);
+        Assert.IsFalse(File.Exists(source));
+        Assert.AreEqual("legacy journal payload", File.ReadAllText(recovered.Manifest.Entries.Single().DestinationPath));
+        Assert.AreEqual(1, QuarantineManifestCodec.ReadStrict(recovered.ManifestPath).SchemaVersion);
+    }
+
+    [TestMethod]
+    [DataRow("unowned-file")]
+    [DataRow("unowned-directory")]
+    [DataRow("reparse")]
+    public async Task Recovery_StoredDirectoryRejectsUnknownOrReparseChildrenBeforeCommit(string change)
+    {
+        using TemporaryDirectory temporary = new();
+        CleanupPlan plan = CreateDirectoryPlan(temporary, "stored-directory-guard");
+        QuarantineResult interrupted = await ExecuteTestAsync(new QuarantineTransaction(new RecordingCleanupFaults { ThrowAt = "manifest:before-commit" }), plan, "q-directory-guard");
+        QuarantineManifestEntry directory = interrupted.Manifest.Entries.First(value => value.Kind == CleanupEntryKind.Directory);
+        string unexpected = Path.Combine(directory.DestinationPath, "unowned");
+        string outside = Path.Combine(temporary.Path, "outside");
+        if (change == "unowned-file") File.WriteAllText(unexpected, "retained unknown payload");
+        else if (change == "unowned-directory") Directory.CreateDirectory(unexpected);
+        else
+        {
+            Directory.CreateDirectory(outside);
+            File.WriteAllText(Path.Combine(outside, "personal.txt"), "outside retained");
+            CreateDirectoryJunction(unexpected, outside);
+        }
+        QuarantineTransaction.ApplyMetadataForTests(directory.DestinationPath, CleanupEntryKind.Directory, directory.Metadata!);
+        try
+        {
+            QuarantineResult rejected = await new QuarantineTransaction().RecoverRecordedAsync(JournalFor(plan, "q-directory-guard"), "q-directory-guard", CleanupAuthorizationCodec.PlanSha256(plan), CancellationToken.None);
+            Assert.AreEqual(QuarantineTransactionState.Recoverable, rejected.State);
+            Assert.IsFalse(File.Exists(rejected.ManifestPath));
+            StringAssert.Contains(rejected.Entries.Single(value => value.RelativePath == directory.RelativePath).Reason!, "unowned or reparse");
+            if (change == "unowned-file") Assert.AreEqual("retained unknown payload", File.ReadAllText(unexpected));
+            else if (change == "reparse") Assert.AreEqual("outside retained", File.ReadAllText(Path.Combine(outside, "personal.txt")));
+            else Assert.IsTrue(Directory.Exists(unexpected));
+        }
+        finally { if (change == "reparse") Directory.Delete(unexpected); }
+    }
+
+    [TestMethod]
+    public async Task Recovery_ManyStoredDirectoriesReadsEachPayloadOnceWithinJournalOverhead()
+    {
+        using TemporaryDirectory temporary = new();
+        string game = Path.Combine(temporary.Path, "game-directory-resume");
+        string vault = Path.Combine(temporary.Path, "vault-directory-resume");
+        Directory.CreateDirectory(vault);
+        byte[] payload = new byte[512 * 1024];
+        Random.Shared.NextBytes(payload);
+        const int files = 48;
+        for (int index = 0; index < files; index++)
+        {
+            string directory = Path.Combine(game, "archive", "pc", "mod", "pack-" + index.ToString("D2"), "a", "b", "c", "d");
+            Directory.CreateDirectory(directory);
+            File.WriteAllBytes(Path.Combine(directory, "payload.archive"), payload);
+        }
+        CleanupPlan plan = new CleanupPlanner().Plan(game, vault, LegacyParityCorpus.LoadEmbedded());
+        QuarantineResult interrupted = await ExecuteTestAsync(new QuarantineTransaction(new RecordingCleanupFaults { ThrowAt = "manifest:before-commit" }), plan, "q-directory-resume");
+        Assert.AreEqual(QuarantineTransactionState.Recoverable, interrupted.State);
+        Assert.IsTrue(interrupted.Manifest.Entries.All(value => value.State == QuarantineEntryState.Stored));
+        using Process process = Process.GetCurrentProcess();
+        Assert.IsTrue(GetProcessIoCounters(process.Handle, out IoCounters before));
+        Stopwatch elapsed = Stopwatch.StartNew();
+        using CancellationTokenSource cancellation = new(TimeSpan.FromSeconds(30));
+        QuarantineResult recovered = await new QuarantineTransaction().RecoverRecordedAsync(JournalFor(plan, "q-directory-resume"), "q-directory-resume", CleanupAuthorizationCodec.PlanSha256(plan), cancellation.Token);
+        elapsed.Stop();
+        Assert.IsTrue(GetProcessIoCounters(process.Handle, out IoCounters after));
+        ulong readBytes = after.ReadBytes - before.ReadBytes;
+        ulong payloadBytes = (ulong)files * (ulong)payload.Length;
+        string metrics = $"files={files}; directories={plan.Entries.Count(value => value.Kind == CleanupEntryKind.Directory)}; payloadBytes={payloadBytes}; readBytes={readBytes}; elapsedSeconds={elapsed.Elapsed.TotalSeconds:F3}";
+        Console.WriteLine(metrics);
+        Assert.AreEqual(QuarantineTransactionState.Committed, recovered.State, metrics);
+        Assert.IsTrue(readBytes >= payloadBytes && readBytes < payloadBytes * 2, metrics);
+        Assert.AreEqual(files, recovered.Manifest.Entries.Count(value => value.Kind == CleanupEntryKind.File));
+        Assert.IsFalse(Directory.Exists(Path.Combine(game, "archive", "pc", "mod")));
+    }
+
+    [TestMethod]
     public async Task Execute_WritesDurableWalBeforeMutationAndManifestLast()
     {
         using TemporaryDirectory temporary = new();
@@ -513,6 +1022,37 @@ public sealed class QuarantineTransactionTests
         Assert.AreEqual("foreign", File.ReadAllText(foreign));
         Assert.IsFalse(File.Exists(Path.Combine(mod, "nested", "mod.archive")));
         Assert.IsTrue(File.Exists(stored.Manifest.Entries.Single(value => value.Kind == CleanupEntryKind.File).DestinationPath));
+    }
+
+    private static (CleanupPlan Plan, string Source) CreateFileMetadataPlan(TemporaryDirectory temporary, string suffix)
+    {
+        (CleanupPlan plan, string source, _) = CreatePlan(temporary, "metadata payload", suffix);
+        FileSecurity security = new FileInfo(source).GetAccessControl(AccessControlSections.Access);
+        security.AddAccessRule(new FileSystemAccessRule(System.Security.Principal.WindowsIdentity.GetCurrent().User!, FileSystemRights.ReadAttributes, AccessControlType.Allow));
+        new FileInfo(source).SetAccessControl(security);
+        File.SetAttributes(source, FileAttributes.Hidden | FileAttributes.Archive);
+        CleanupEntry entry = WindowsCleanupProbe.ObserveFileForPlan(plan.GameRoot, source, "disposable file metadata");
+        return (plan with { Entries = [entry] }, source);
+    }
+
+    private static async Task<(CleanupPlan Plan, string Source, string Destination)> CreatePublishedMetadataMismatch(TemporaryDirectory temporary)
+    {
+        (CleanupPlan plan, string source) = CreateFileMetadataPlan(temporary, "legacy-metadata");
+        string destination = Path.Combine(plan.QuarantineRoot, "q-legacy-metadata", "files", plan.Entries.Single().RelativePath);
+        RecordingCleanupFaults faults = new() { CrossVolume = true, ThrowAt = "entry:published", OnBoundary = boundary =>
+        {
+            if (boundary != "entry:published") return;
+            FileSecurity security = new FileInfo(destination).GetAccessControl(AccessControlSections.Access);
+            security.AddAccessRule(new FileSystemAccessRule(System.Security.Principal.WindowsIdentity.GetCurrent().User!, FileSystemRights.ReadPermissions, AccessControlType.Allow));
+            new FileInfo(destination).SetAccessControl(security);
+            File.SetAttributes(destination, FileAttributes.Archive);
+        } };
+        QuarantineResult interrupted = await ExecuteTestAsync(new QuarantineTransaction(faults), plan, "q-legacy-metadata");
+        Assert.AreEqual(QuarantineTransactionState.Recoverable, interrupted.State, string.Join("; ", interrupted.Entries.Select(value => value.Reason)));
+        Assert.IsTrue(File.Exists(source));
+        Assert.IsTrue(File.Exists(destination));
+        Assert.IsFalse(QuarantineTransaction.MetadataMatchesForTests(destination, CleanupEntryKind.File, plan.Entries.Single().Metadata));
+        return (plan, source, destination);
     }
 
     private static (CleanupPlan Plan, string Source, string Vault) CreatePlan(TemporaryDirectory temporary, string content, string suffix = "base")

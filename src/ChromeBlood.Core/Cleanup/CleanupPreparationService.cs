@@ -11,7 +11,10 @@ using Microsoft.Win32.SafeHandles;
 namespace ChromeBlood.Core.Cleanup;
 
 public sealed record CleanupPreparationItem(string Scope, string RelativePath, string Label, CleanupEntryStatus Status);
-public sealed record CleanupPreparationPending(string Id, string GameRoot, string BackupRoot, string State, string[] Targets);
+public sealed record CleanupPreparationPending(string Id, string GameRoot, string BackupRoot, string State, string[] Targets)
+{
+    public string FailureDetail { get; init; } = string.Empty;
+}
 public sealed record CleanupPreparationPreview(CleanupPreparationItem[] Items, CleanupPreparationPending[] Pending, string GameBackupRoot, string AppDataBackupRoot)
 {
     public VanillaScanResult? GameFiles { get; init; }
@@ -311,13 +314,18 @@ public sealed class CleanupPreparationService
                 throw new CleanupManifestException("The preparation journal does not point to its exact transaction files.");
             if (!File.Exists(entry.WalPath) && !File.Exists(entry.ManifestPath))
             {
-                pending.Add(new(entry.QuarantineId, target, entry.QuarantineRoot, "Preparation journal needs attention before any files can move", []));
+                pending.Add(new(entry.QuarantineId, target, entry.QuarantineRoot, "Preparation journal needs attention before any files can move", [])
+                { FailureDetail = "The staged recovery journal is missing. Retry checks whether preparation stopped before any files moved. Existing backup contents are retained." });
                 continue;
             }
             QuarantineRecoveryState recovery = QuarantineTransaction.ReadRecovery(entry.QuarantineRoot, entry.QuarantineId);
             if (!CleanupPlanner.PathEquals(recovery.GameRoot, target)) throw new CleanupManifestException("A preparation journal belongs to a different physical target.");
 
-            pending.Add(new(entry.QuarantineId, recovery.GameRoot, entry.QuarantineRoot, recovery.State.ToString(), recovery.Entries.Select(value => value.RelativePath).ToArray()));
+            pending.Add(new(entry.QuarantineId, recovery.GameRoot, entry.QuarantineRoot, recovery.State.ToString(), recovery.Entries.Select(value => value.RelativePath).ToArray())
+            {
+                FailureDetail = recovery.FailureReason ?? string.Join("; ", recovery.Entries.Where(value => value.Failure != QuarantineFailure.None)
+                    .Select(value => FailureDetail(value.RelativePath, value.Failure, value.FailureReason, value.NativeErrorCode, value.FailureHResult)))
+            });
         }
         return [.. pending];
     }
@@ -333,8 +341,27 @@ public sealed class CleanupPreparationService
     private static CleanupPreparationResult Failed(QuarantineResult result, string backup, CancellationToken cancellationToken)
     {
         if (cancellationToken.IsCancellationRequested) return new(backup, false, true);
-        string details = string.Join("; ", result.Entries.Where(value => value.Failure != QuarantineFailure.None).Select(value => value.RelativePath + ": " + (value.Reason ?? value.Failure.ToString())));
-        throw new CleanupManifestException("Preparation paused. Backups are retained at " + backup + ". Resume the recorded transaction. " + details);
+        string details = result.Manifest.FailureReason ?? string.Join("; ", result.Entries.Where(value => value.Failure != QuarantineFailure.None)
+            .Select(value => FailureDetail(value.RelativePath, value.Failure, value.Reason, value.NativeErrorCode, value.FailureHResult)));
+        throw new CleanupManifestException("Preparation paused for " + result.Manifest.QuarantineId + ". Backups are retained at " + backup + ". " + details);
+    }
+
+    private static string FailureDetail(string relativePath, QuarantineFailure failure, string? reason, int? nativeErrorCode, int? hResult)
+    {
+        string detail = relativePath + ": " + failure + (string.IsNullOrWhiteSpace(reason) ? string.Empty : ". " + reason);
+        if (nativeErrorCode is not null) detail += " (Windows error " + nativeErrorCode.Value + ")";
+        if (hResult is not null) detail += " (HRESULT 0x" + hResult.Value.ToString("X8", System.Globalization.CultureInfo.InvariantCulture) + ")";
+        string action = failure switch
+        {
+            QuarantineFailure.Locked => "Close the game and any mod tools using this file, then retry cleanup.",
+            QuarantineFailure.AccessDenied => "Check your Windows account's access to this file and the backup folder, then retry cleanup.",
+            QuarantineFailure.Conflict or QuarantineFailure.IdentityChanged or QuarantineFailure.HashChanged or QuarantineFailure.ReparsePoint
+                => "Keep the backup. Inspect the conflicting or changed path before retrying; setup will not overwrite it.",
+            _ when nativeErrorCode is 39 or 112 => "Free space on the backup drive, then retry cleanup.",
+            _ when nativeErrorCode == 206 => "Check the Windows long paths setting, then retry cleanup. Keep the recorded backup folder in place.",
+            _ => "Keep the backup and include this exact error and transaction ID when asking for help."
+        };
+        return detail + ". " + action;
     }
 
     private static void ValidateRecoveryRoots(QuarantineManifest manifest)

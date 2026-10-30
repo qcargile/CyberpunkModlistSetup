@@ -39,6 +39,7 @@ public sealed class PreparationViewModel : INotifyPropertyChanged
     private string _progressDetail = "";
     private double? _progressFraction;
     private string _message = "";
+    private string _cleanupFailure = "";
     private string? _backupRoot;
     private bool _handoffOpened;
     private bool _rebootRequired;
@@ -95,6 +96,8 @@ public sealed class PreparationViewModel : INotifyPropertyChanged
     public bool IsSteam => _selectedGame?.Store.Equals("Steam", StringComparison.OrdinalIgnoreCase) == true;
     public bool ReadyForHandoff => _snapshot?.ReadyForHandoff == true;
     public bool PendingCleanup => _snapshot?.PendingCleanup == true;
+    public string CleanupFailure => _cleanupFailure;
+    public bool HasCleanupFailure => !string.IsNullOrWhiteSpace(_cleanupFailure);
     public bool HasRecoveryDetail => !string.IsNullOrWhiteSpace(RecoveryDetail);
     public bool HasBackup => !string.IsNullOrWhiteSpace(_backupRoot);
     public string BackupRoot => _backupRoot ?? "";
@@ -140,7 +143,7 @@ public sealed class PreparationViewModel : INotifyPropertyChanged
         : GameIsClean ? "Clean" : _snapshot?.GameFileReferenceMatched != true ? "Unsupported" : "Unverified";
     public string CleanupTitle => CleanupState switch
     {
-        "Pending" => "Finish your cleanup",
+        "Pending" => HasCleanupFailure ? "Cleanup needs attention" : "Finish your cleanup",
         "Repair" => "Your game needs repair",
         "Blocked" => "Check needs attention",
         "Dirty" => "Your game needs cleanup",
@@ -150,9 +153,9 @@ public sealed class PreparationViewModel : INotifyPropertyChanged
     };
     public string CleanupDetail => (CleanupState switch
     {
-        "Pending" => "Resume safely from the saved backup.",
+        "Pending" => HasCleanupFailure ? "The last attempt could not finish. Resolve the error below, then retry. Saved files are retained." : "Resume safely from the saved backup.",
         "Repair" => _review && CleanGame ? "Changed official files will be copied to backup; extra files will be removed." : "Repair official files through your game store, then verify again.",
-        "Blocked" => "Close the game and mod tools, resolve the findings in Details, then check again.",
+        "Blocked" => HasCleanupFailure ? "Resolve the error below, then check again. Saved files are retained." : "Close the game and mod tools, resolve the findings in Details, then check again.",
         "Dirty" => _review && CleanGame ? $"{ExtraGameLocations:N0} extra {(ExtraGameLocations == 1 ? "item" : "items")} will be backed up and removed." : $"{ExtraGameLocations:N0} extra {(ExtraGameLocations == 1 ? "item" : "items")} found.",
         "Clean" => _snapshot?.PreservedDlssFiles > 0 ? "Game files checked. No cleanup needed." : "Official files verified. No extra game files found.",
         "Unsupported" => "Known mod locations were checked; a full file reference is unavailable for this installation.",
@@ -160,7 +163,7 @@ public sealed class PreparationViewModel : INotifyPropertyChanged
     }) + (_snapshot?.PreservedDlssFiles > 0 ? " Custom DLSS files and verified Swapper backups are kept." : "");
     public string CleanupSymbol => CleanupState is "Clean" ? "✓" : CleanupState is "Unverified" ? "?" : "!";
     public string SecondaryContinueText => CleanupState == "Dirty" ? "Continue without cleanup" : "Continue without verification";
-    public string ReviewTitle => PendingCleanup ? "Resume the saved cleanup" : CleanGame ? "Review cleanup" : "Review preparation";
+    public string ReviewTitle => PendingCleanup && HasCleanupFailure ? "Retry the saved cleanup" : PendingCleanup ? "Resume the saved cleanup" : CleanGame ? "Review cleanup" : "Review preparation";
     public string ReviewReminder => CleanGame || ResetSettings || ClearDiagnostics ? "Close the game, Steam and mod managers before continuing." : "Only your selected preparation will run.";
     public IReadOnlyList<string> ReviewedPreparationActions => AdditionalActions();
     public bool HasAdditionalActions => ReviewedPreparationActions.Count > 0;
@@ -171,10 +174,11 @@ public sealed class PreparationViewModel : INotifyPropertyChanged
     public bool HasSelectedWork => CleanGame || ResetSettings || ClearDiagnostics || InstallRuntimes && NeedsPreparation("vcredist")
         || EnableLongPaths && NeedsPreparation("longpaths") || DownloadWabbajack && NeedsPreparation("wabbajack")
         || SteamLaunchOnly && IsSteam && NeedsPreparation("steamupdate") || LegacyDirectX && NeedsPreparation("directx");
-    public string PrimaryText => _review ? CleanGame || ResetSettings || ClearDiagnostics ? PendingCleanup ? "Resume cleanup" : "Back up and clean" : "Prepare for installation"
+    private string ResumeText => HasCleanupFailure ? "Retry cleanup" : "Resume cleanup";
+    public string PrimaryText => _review ? CleanGame || ResetSettings || ClearDiagnostics ? PendingCleanup ? ResumeText : "Back up and clean" : "Prepare for installation"
         : IsGamePage ? "Continue" : IsWabbajackPage ? "Open C&B in Wabbajack" : CleanupState switch
         {
-            "Pending" => "Resume cleanup",
+            "Pending" => ResumeText,
             "Repair" => "Verify again",
             "Blocked" => "Check again",
             "Dirty" => "Clean up game",
@@ -297,6 +301,7 @@ public sealed class PreparationViewModel : INotifyPropertyChanged
     internal void UpdateSnapshot(PreparationSnapshot snapshot)
     {
         _snapshot = snapshot;
+        _cleanupFailure = snapshot.CleanupFailure;
         _extraGameLocations = snapshot.CleanupItems.Count(item => item.Scope == "Game");
         if (GameIsClean) _cleanGame = false;
         if (snapshot.PendingCleanup) { _resetSettings = false; _clearDiagnostics = false; }
@@ -335,14 +340,7 @@ public sealed class PreparationViewModel : INotifyPropertyChanged
                     Notify();
                 });
                 PreparationResult result = await _service.ApplyAsync(reviewed, options, progress, token);
-                UpdateSnapshot(result.Snapshot);
-                _message = result.Message;
-                _backupRoot = result.BackupRoot ?? _backupRoot;
-                _rebootRequired |= result.RebootRequired;
-                if (_rebootRequired) _message += " Restart Windows before launching the game. Wabbajack can download meanwhile.";
-                _review = false;
-                _page = "prepare";
-                if (result.Completed) { _cleanGame = false; _resetSettings = false; _clearDiagnostics = false; }
+                ApplyPreparationResult(result);
             });
         }
         else if (IsGamePage) Navigate("prepare");
@@ -362,6 +360,20 @@ public sealed class PreparationViewModel : INotifyPropertyChanged
         else if (CleanupBlocked) _ = RefreshAsync(true);
         else if (NeedsGameRepair || CleanupState == "Unverified") CheckGameFiles();
         else ReviewOrContinue();
+    }
+
+    internal void ApplyPreparationResult(PreparationResult result)
+    {
+        UpdateSnapshot(result.Snapshot);
+        _message = result.Message;
+        if (PendingCleanup && !result.Completed && !result.Cancelled) _cleanupFailure = result.Message;
+        _backupRoot = result.BackupRoot ?? _backupRoot;
+        _rebootRequired |= result.RebootRequired;
+        if (_rebootRequired) _message += " Restart Windows before launching the game. Wabbajack can download meanwhile.";
+        _review = false;
+        _page = "prepare";
+        if (result.Completed) { _cleanGame = false; _resetSettings = false; _clearDiagnostics = false; }
+        Notify();
     }
 
     private void ContinueWithoutCleanup()

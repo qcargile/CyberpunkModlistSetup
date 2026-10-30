@@ -249,6 +249,65 @@ public sealed class UndoJournalTests
     }
 
     [TestMethod]
+    [DataRow(32, "Close the game", false)]
+    [DataRow(5, "Windows account's access", false)]
+    [DataRow(112, "Free space", false)]
+    [DataRow(206, "long paths", false)]
+    [DataRow(995, "exact error and transaction ID", false)]
+    [DataRow(32, "Close the game", true)]
+    [DataRow(5, "Windows account's access", true)]
+    [DataRow(112, "Free space", true)]
+    [DataRow(206, "long paths", true)]
+    [DataRow(995, "exact error and transaction ID", true)]
+    public async Task Preview_RetainsNativeFailureAndMatchingNextStepAfterServiceReopens(int errorCode, string action, bool hResult)
+    {
+        using TemporaryDirectory temporary = new();
+        (CleanupPreparationService service, UndoJournal journal, string game, string vault) = ResumeFixture(temporary, false);
+        string source = Path.Combine(game, "bin", "x64", "winmm.dll");
+        File.WriteAllText(source, "retained failure");
+        AuthorizedCleanupPlan authorized = CleanupPlanner.ForDisposableTests(temporary.Path).Authorize(game, vault, LegacyParityCorpus.LoadEmbedded());
+        RecordingCleanupFaults faults = new() { OnBoundary = boundary =>
+        {
+            if (boundary != "entry:moving") return;
+            if (hResult) throw new IOException("The recorded filesystem operation failed.", unchecked((int)(0x80070000u | (uint)errorCode)));
+            throw new IOException("The recorded filesystem operation failed.", new System.ComponentModel.Win32Exception(errorCode));
+        } };
+        QuarantineResult result = await new QuarantineTransaction(faults).ExecuteRecordedAsync(authorized, "q-action", journal, CancellationToken.None);
+        Assert.AreEqual(QuarantineTransactionState.Failed, result.State);
+        CleanupPreparationPreview preview = await service.PreviewAsync(game, CancellationToken.None);
+        CleanupPreparationPending pending = preview.Pending.Single();
+        StringAssert.Contains(pending.FailureDetail, "Windows error " + errorCode);
+        StringAssert.Contains(pending.FailureDetail, "HRESULT 0x");
+        StringAssert.Contains(pending.FailureDetail, "The recorded filesystem operation failed.");
+        StringAssert.Contains(pending.FailureDetail, action);
+        Assert.AreEqual("retained failure", File.ReadAllText(source));
+    }
+
+    [TestMethod]
+    public async Task Resume_FailedLockedTransactionReturnsDetailedErrorThenCompletesAfterRelease()
+    {
+        using TemporaryDirectory temporary = new();
+        (CleanupPreparationService service, UndoJournal journal, string game, string vault) = ResumeFixture(temporary, false);
+        string source = Path.Combine(game, "bin", "x64", "winmm.dll");
+        File.WriteAllText(source, "retry payload");
+        AuthorizedCleanupPlan authorized = CleanupPlanner.ForDisposableTests(temporary.Path).Authorize(game, vault, LegacyParityCorpus.LoadEmbedded());
+        using (FileStream held = new(source, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            await new QuarantineTransaction().ExecuteRecordedAsync(authorized, "q-service-lock", journal, CancellationToken.None);
+            CleanupManifestException error = await Assert.ThrowsExactlyAsync<CleanupManifestException>(() => service.ResumeAsync(game, "q-service-lock", _ => { }, CancellationToken.None));
+            StringAssert.Contains(error.Message, "q-service-lock");
+            StringAssert.Contains(error.Message, "Windows error 32");
+            StringAssert.Contains(error.Message, "Close the game");
+            Assert.AreEqual(1, (await service.PreviewAsync(game, CancellationToken.None)).Pending.Length);
+        }
+        CleanupPreparationResult recovered = await service.ResumeAsync(game, "q-service-lock", _ => { }, CancellationToken.None);
+        Assert.IsTrue(recovered.Completed);
+        Assert.AreEqual(vault, recovered.BackupRoot);
+        Assert.AreEqual(0, (await service.PreviewAsync(game, CancellationToken.None)).Pending.Length);
+        Assert.AreEqual("retry payload", File.ReadAllText(Path.Combine(vault, "q-service-lock", "files", "bin", "x64", "winmm.dll")));
+    }
+
+    [TestMethod]
     [DataRow(false, UndoJournalState.Planned)]
     [DataRow(false, UndoJournalState.Executing)]
     [DataRow(true, UndoJournalState.Planned)]

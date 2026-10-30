@@ -59,6 +59,7 @@ public sealed class PreparationService
             {
                 GameRootIdentity = identity,
                 RecoveryDetail = "Cleanup could not be inspected: " + exception.Message,
+                CleanupFailure = "Cleanup could not be inspected: " + exception.Message,
                 CleanupIssue = true,
                 ReadyForHandoff = false
             };
@@ -111,6 +112,8 @@ public sealed class PreparationService
             CleanupItems = items.Select(item => new CleanupItemLabel(item.RelativePath,
                 item.Label + (item.Status == CleanupEntryStatus.Available ? "" : " (" + item.Status + ")"), item.Scope)).ToArray(),
             PendingCleanup = preview.Pending.Length > 0,
+            CleanupFailure = string.Join("\n\n", preview.Pending.Where(pending => !string.IsNullOrWhiteSpace(pending.FailureDetail))
+                .Select(pending => "Saved cleanup " + pending.Id + ": " + pending.FailureDetail)),
             CleanupIssue = scan is { ProfileMatch.Matched: true, Complete: false },
             CleanupReferenceDetail = reference,
             GameFileHashesChecked = hashesChecked,
@@ -172,6 +175,7 @@ public sealed class PreparationService
                 if (!options.CleanGame) throw new InvalidOperationException("Select cleanup to continue the saved preparation before starting another operation.");
                 foreach (CleanupPreparationPending transaction in pending.Pending)
                 {
+                    backup = transaction.BackupRoot;
                     CleanupPreparationResult result = await _cleanup.ResumeAsync(current.SelectedGameRoot, transaction.Id,
                         message => progress?.Report(new("Continuing preparation", message)), cancellationToken).ConfigureAwait(false);
                     backup = result.BackupRoot;
@@ -261,6 +265,7 @@ public sealed class PreparationService
             {
                 ReadyForHandoff = false,
                 RecoveryDetail = exception.Message,
+                CleanupFailure = "The current cleanup state could not be inspected: " + exception.Message,
                 CleanupIssue = true,
                 GameFileHashesChecked = false,
                 GameFileScanComplete = false,
