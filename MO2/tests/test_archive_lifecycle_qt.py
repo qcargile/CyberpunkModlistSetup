@@ -1,4 +1,8 @@
+import ctypes
 import os
+import shutil
+import subprocess
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -34,6 +38,7 @@ class ArchiveLifecycleTests(unittest.TestCase):
         panel.needs_scan = False
         panel.result("scan", "scan", data)
         panel.timer.stop()
+        self.wait_for(lambda: self.plugin.watcher.ready or not self.plugin.watcher.running())
 
     def reorder(self, panel, source, destination):
         model = panel.archive_model
@@ -241,10 +246,12 @@ class ArchiveLifecycleTests(unittest.TestCase):
         data["archiveRows"][0]["physicalPath"] = str(path)
         data["archiveDirectories"] = [str(directory)]
         self.deliver(panel, data)
-        native_events = observe(self.plugin.watcher.fileChanged)
-        self.plugin.watcher.directoryChanged.connect(lambda *arguments: native_events.append(list(arguments)))
+        native_events = observe(self.plugin.watcher.changed)
         with patch.object(self.plugin, "changed", wraps=self.plugin.changed) as changed:
             mutation(directory, path)
+            if not expected:
+                profile = self.organizer.profile_path / "modlist.txt"
+                profile.write_bytes(profile.read_bytes())
             self.wait_for(lambda: bool(native_events))
             self.assertEqual(bool(changed.call_count), expected)
             self.assertEqual(panel.state is None, expected)
@@ -256,11 +263,289 @@ class ArchiveLifecycleTests(unittest.TestCase):
     def test_native_file_watcher_invalidates_a_deleted_archive(self):
         self.watch_archive_change(lambda directory, path: path.unlink(), True)
 
+    def test_watching_an_archive_does_not_prevent_removing_its_mod_directory(self):
+        panel = self.loaded()
+        mod = self.organizer.root / "mods" / "High"
+        directory = mod / "archive" / "pc" / "mod"
+        directory.mkdir(parents=True)
+        path = directory / "a.archive"
+        path.write_bytes(b"original")
+        data = self.state()
+        data["archiveRows"][0]["physicalPath"] = str(path)
+        data["archiveDirectories"] = [str(directory)]
+        self.deliver(panel, data)
+        renamed = mod.with_name("Renamed")
+        mod.rename(renamed)
+        mod = renamed
+        shutil.rmtree(mod)
+        self.assertFalse(mod.exists())
+        self.wait_for(lambda: panel.state is None)
+        panel.timer.stop()
+
+    def test_watching_a_missing_archive_directory_does_not_lock_its_existing_parent(self):
+        panel = self.loaded()
+        mod = self.organizer.root / "mods" / "High"
+        parent = mod / "archive"
+        parent.mkdir(parents=True)
+        data = self.state()
+        data["archiveRows"] = []
+        data["archiveDirectories"] = [str(parent / "pc" / "mod")]
+        self.deliver(panel, data)
+        self.application.processEvents()
+        parent.rmdir()
+        mod.rmdir()
+        self.assertFalse(mod.exists())
+
     def test_native_file_watcher_invalidates_written_archive_bytes(self):
         self.watch_archive_change(lambda directory, path: path.write_bytes(b"changed"), True)
 
     def test_native_file_watcher_ignores_an_unrelated_file_in_the_archive_directory(self):
         self.watch_archive_change(lambda directory, path: (directory / "readme.txt").write_text("notes", encoding="utf-8"), False)
+
+    def archive_watch(self, root=None):
+        panel = self.loaded()
+        mod = (root or self.organizer.root / "mods") / "High"
+        directory = mod / "archive" / "pc" / "mod"
+        directory.mkdir(parents=True)
+        path = directory / "a.archive"
+        path.write_bytes(b"original")
+        data = self.state()
+        data["archiveRows"] = [{**archive("a.archive"), "physicalPath": str(path)}]
+        data["archiveDirectories"] = [str(directory)]
+        self.deliver(panel, data)
+        return panel, mod, directory, path, data
+
+    def test_archive_directory_prefixes_can_be_moved_and_deleted(self):
+        panel, mod, directory, path, data = self.archive_watch()
+        for relative in ("archive/pc/mod", "archive/pc", "archive"):
+            with self.subTest(directory=relative):
+                original = mod / relative
+                moved = original.with_name(original.name + "-moved")
+                original.rename(moved)
+                shutil.rmtree(moved)
+                self.wait_for(lambda: panel.state is None)
+                directory.mkdir(parents=True)
+                path.write_bytes(b"recreated")
+                self.deliver(panel, data)
+        panel.timer.stop()
+
+    def test_recreated_mod_and_archive_directories_are_observed(self):
+        panel, mod, directory, path, data = self.archive_watch()
+        shutil.rmtree(mod)
+        self.wait_for(lambda: panel.state is None)
+        self.deliver(panel, {**data, "archiveRows": []})
+        directory.mkdir(parents=True)
+        path.write_bytes(b"recreated")
+        self.wait_for(lambda: panel.state is None)
+        self.deliver(panel, data)
+        path.write_bytes(b"edited")
+        self.wait_for(lambda: panel.state is None)
+        panel.timer.stop()
+
+    def test_recreated_mods_root_is_observed_after_refresh(self):
+        panel, mod, directory, path, data = self.archive_watch()
+        mods = self.organizer.root / "mods"
+        moved = mods.with_name("MovedMods")
+        mods.rename(moved)
+        self.wait_for(lambda: panel.state is None)
+        directory.mkdir(parents=True)
+        path.write_bytes(b"recreated")
+        self.deliver(panel, data)
+        path.write_bytes(b"edited")
+        self.wait_for(lambda: panel.state is None)
+        shutil.rmtree(moved)
+        panel.timer.stop()
+
+    def test_missing_mods_root_is_observed_when_created(self):
+        panel = self.loaded()
+        mods = self.organizer.root / "mods"
+        mods.rmdir()
+        directory = mods / "High" / "archive" / "pc" / "mod"
+        data = {**self.state(), "archiveRows": [], "archiveDirectories": [str(directory)]}
+        self.deliver(panel, data)
+        directory.mkdir(parents=True)
+        (directory / "new.archive").write_bytes(b"new")
+        self.wait_for(lambda: panel.state is None)
+        panel.timer.stop()
+
+    def test_profile_directory_can_be_renamed_without_a_lease(self):
+        panel = self.loaded()
+        self.wait_for(lambda: self.plugin.watcher.ready)
+        original = self.organizer.profile_path
+        moved = original.with_name("Renamed")
+        original.rename(moved)
+        self.wait_for(lambda: panel.state is None)
+        self.organizer.profile_path = moved
+        self.deliver(panel, self.state())
+        (moved / "modlist.txt").write_text("+Changed\n", encoding="utf-8")
+        self.wait_for(lambda: panel.state is None)
+        panel.timer.stop()
+
+    def test_atomic_order_replacement_is_observed_after_a_profile_change(self):
+        panel = self.loaded()
+        self.organizer.profile_path = self.organizer.root / "profiles" / "Second"
+        self.organizer.profile_path.mkdir()
+        (self.organizer.profile_path / "modlist.txt").write_text("+High\n", encoding="utf-8")
+        order = self.organizer.profile_path / "archive-order.txt"
+        order.write_text("a.archive\nb.archive\n", encoding="utf-8")
+        data = {**self.state(), "orderSource": str(order)}
+        self.deliver(panel, data)
+        temporary = order.with_suffix(".tmp")
+        temporary.write_text("b.archive\na.archive\n", encoding="utf-8")
+        temporary.replace(order)
+        self.wait_for(lambda: panel.state is None)
+        self.deliver(panel, data)
+        order.unlink()
+        self.wait_for(lambda: panel.state is None)
+        panel.timer.stop()
+
+    def test_native_archive_content_changes_with_unchanged_metadata_are_observed(self):
+        def change(directory, path):
+            metadata = path.stat()
+            path.write_bytes(b"modified")
+            os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+        self.watch_archive_change(change, True)
+
+    def test_unrelated_archive_directory_file_changes_do_not_read_order_files(self):
+        panel, mod, directory, path, data = self.archive_watch()
+        unrelated = directory / "readme.txt"
+        unrelated.write_text("one", encoding="utf-8")
+        self.application.processEvents()
+        with patch.object(self.plugin, "file_signature", side_effect=AssertionError("Unrelated event read order files")), patch.object(self.plugin, "changed") as changed:
+            unrelated.write_text("two", encoding="utf-8")
+            unrelated.unlink()
+            loop = QEventLoop()
+            QTimer.singleShot(100, loop.quit)
+            loop.exec()
+            changed.assert_not_called()
+        self.assertIsNotNone(panel.state)
+
+    def test_native_watch_failure_disables_stale_order_and_refresh_recovers(self):
+        panel, mod, directory, path, data = self.archive_watch()
+        watcher = self.plugin.watcher
+        watcher.stop()
+        handle = watcher.api.CreateFileW(str(self.organizer.root / "mods"), 1, 0, None, 3, 0x02000000, None)
+        self.assertNotEqual(handle, ctypes.c_void_p(-1).value)
+        try:
+            self.deliver(panel, data)
+            self.wait_for(lambda: panel.state is None)
+            self.assertFalse(watcher.running())
+            self.assertFalse(panel.timer.isActive())
+            self.assertFalse(panel.save_button.isEnabled())
+            self.assertTrue(panel.refresh_button.isEnabled())
+            self.assertIn("Archive monitoring stopped", panel.status.text())
+        finally:
+            watcher.api.CloseHandle(handle)
+        self.deliver(panel, data)
+        self.assertTrue(watcher.running())
+        path.write_bytes(b"recovered")
+        self.wait_for(lambda: panel.state is None)
+        panel.timer.stop()
+
+    def test_linked_archive_target_changes_are_observed_without_locking_the_target(self):
+        external = self.organizer.root / "External"
+        external.mkdir()
+        target = external / "High"
+        target.mkdir()
+        junction = self.organizer.root / "mods" / "High"
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(target)], check=True, capture_output=True)
+        panel, mod, directory, path, data = self.archive_watch()
+        path.write_bytes(b"changed")
+        self.wait_for(lambda: panel.state is None)
+        self.deliver(panel, data)
+        physical = target / "archive" / "pc" / "mod" / "a.archive"
+        physical.write_bytes(b"external")
+        self.wait_for(lambda: panel.state is None)
+        self.deliver(panel, data)
+        moved = target.with_name("Moved")
+        target.rename(moved)
+        self.wait_for(lambda: panel.state is None)
+        shutil.rmtree(moved)
+        panel.timer.stop()
+
+    def test_native_watch_cost_is_bounded_by_roots_and_stops_when_disabled(self):
+        panel, mod, directory, path, data = self.archive_watch()
+        rows = [{**archive(f"{index}.archive"), "physicalPath": str(directory / f"{index}.archive")} for index in range(5000)]
+        self.deliver(panel, {**data, "archiveRows": rows})
+        watcher = self.plugin.watcher
+        worker = watcher.thread
+        self.assertEqual(sum(thread.name == "ChromeBloodArchiveWatch" for thread in threading.enumerate()), 1)
+        self.assertLessEqual(len(watcher.specification[0]), 8)
+        self.organizer.enabled = False
+        self.plugin.disabled()
+        self.assertFalse(worker.is_alive())
+        self.assertFalse(watcher.running())
+        self.assertIsNone(watcher.stop_event)
+        mod.rename(mod.with_name("Disabled"))
+        self.assertEqual(sum(thread.name == "ChromeBloodArchiveWatch" for thread in threading.enumerate()), 0)
+
+    def test_unchanged_watch_state_reuses_the_ready_worker(self):
+        panel, mod, directory, path, data = self.archive_watch()
+        worker = self.plugin.watcher.thread
+        self.deliver(panel, data)
+        self.assertIs(self.plugin.watcher.thread, worker)
+
+    def test_native_watch_startup_keeps_the_qt_event_loop_responsive(self):
+        from chrome_blood_archives.watcher import DirectoryRead
+        panel, mod, directory, path, data = self.archive_watch()
+        watcher = self.plugin.watcher
+        specification = watcher.specification
+        release = threading.Event()
+        original = DirectoryRead.start
+        def delayed_start(read):
+            if not release.wait(2):
+                raise OSError("The Qt event loop did not release startup.")
+            original(read)
+        with patch.object(DirectoryRead, "start", delayed_start):
+            watcher.configure(*specification, force=True)
+            self.assertFalse(watcher.ready)
+            QTimer.singleShot(10, release.set)
+            self.wait_for(lambda: watcher.ready or not watcher.running())
+            self.assertTrue(release.is_set())
+            self.assertTrue(watcher.ready)
+
+    def test_native_watch_shutdown_keeps_the_qt_event_loop_responsive(self):
+        from chrome_blood_archives.watcher import DirectoryRead
+        self.archive_watch()
+        watcher = self.plugin.watcher
+        worker = watcher.thread
+        release = threading.Event()
+        original = DirectoryRead.close
+        def delayed_close(read):
+            release.wait(2)
+            original(read)
+        with patch.object(DirectoryRead, "close", delayed_close):
+            QTimer.singleShot(10, release.set)
+            watcher.stop()
+            self.assertTrue(release.is_set())
+            self.assertFalse(worker.is_alive())
+
+    def test_disabling_discards_queued_native_changes(self):
+        panel, mod, directory, path, data = self.archive_watch()
+        with patch.object(self.plugin, "changed") as changed:
+            path.write_bytes(b"queued")
+            self.organizer.enabled = False
+            self.plugin.disabled()
+            self.application.processEvents()
+            changed.assert_not_called()
+
+    def test_destroyed_window_drains_native_watch_worker(self):
+        self.archive_watch()
+        worker = self.plugin.watcher.thread
+        self.plugin.window.deleteLater()
+        archive_tests.QCoreApplication.sendPostedEvents(None, archive_tests.QEvent.Type.DeferredDelete)
+        self.application.processEvents()
+        self.assertFalse(worker.is_alive())
+        self.assertFalse(self.plugin.watcher.running())
+        self.plugin.bridge = None
+
+    def test_accepted_close_drains_native_watch_worker(self):
+        self.archive_watch()
+        worker = self.plugin.watcher.thread
+        self.assertTrue(self.plugin.window.close())
+        self.assertFalse(worker.is_alive())
+        self.application.processEvents()
+        self.assertFalse(self.plugin.watcher.running())
 
     def test_before_run_blocks_active_save_for_the_game_and_allows_tools(self):
         self.loaded()

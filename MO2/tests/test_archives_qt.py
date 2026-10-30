@@ -27,6 +27,8 @@ class Organizer:
         self.root = Path(root)
         self.profile_path = self.root / "profiles" / "First"
         self.profile_path.mkdir(parents=True)
+        for name in ("mods", "overwrite", "Game"):
+            (self.root / name).mkdir()
         (self.profile_path / "modlist.txt").write_text("+High\n+Low\n", encoding="utf-8")
         package = self.root / "plugins" / "chrome_blood_archives"
         package.mkdir(parents=True)
@@ -47,6 +49,12 @@ class Organizer:
 
     def basePath(self):
         return str(self.root)
+
+    def modsPath(self):
+        return str(self.root / "mods")
+
+    def overwritePath(self):
+        return str(self.root / "overwrite")
 
     def profile(self):
         return SimpleNamespace(absolutePath=lambda: str(self.profile_path))

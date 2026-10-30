@@ -1,13 +1,15 @@
 import hashlib
 from pathlib import Path
+from stat import IO_REPARSE_TAG_MOUNT_POINT, IO_REPARSE_TAG_SYMLINK
 
 import mobase
-from PyQt6.QtCore import QCoreApplication, QDir, QEvent, QEventLoop, QFileSystemWatcher, QItemSelection, QItemSelectionModel, QModelIndex, QObject, QProcess, QTimer, Qt, qWarning
+from PyQt6.QtCore import QCoreApplication, QDir, QEvent, QEventLoop, QItemSelection, QItemSelectionModel, QModelIndex, QObject, QProcess, QTimer, Qt, qWarning
 from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtWidgets import QMainWindow, QMenu, QMessageBox, QTabWidget, QTreeView
 
 from .bridge import ArchiveBridge
 from .panel import ArchivesPanel
+from .watcher import DirectoryWatcher, path_key
 
 
 class WindowLifetime(QObject):
@@ -35,11 +37,15 @@ class WindowLifetime(QObject):
             self.close_confirmed = True
         if bridge is None or bridge.process.state() == QProcess.ProcessState.NotRunning:
             if plugin.active():
+                if plugin.watcher is not None:
+                    plugin.watcher.stop()
                 plugin.detach_tab()
                 QTimer.singleShot(0, self.restore_if_visible)
             return False
         self.quitting = event.type() == QEvent.Type.Quit
         self.closing_window = None if self.quitting else watched
+        if plugin.watcher is not None:
+            plugin.watcher.stop()
         if plugin.panel is not None:
             plugin.panel.preserve_draft()
             plugin.panel.status.setText("Finishing the archive operation before closing…")
@@ -84,6 +90,8 @@ class WindowLifetime(QObject):
             return
         self.exit_committed = True
         plugin = self.plugin
+        if plugin.watcher is not None:
+            plugin.watcher.stop()
         if plugin.active():
             plugin.detach_tab()
         if plugin.panel is not None:
@@ -116,8 +124,10 @@ class ChromeBloodArchives(mobase.IPluginTool, mobase.IPluginFileMapper):
         self.mod_selection = None
         self.syncing_selection = False
         self.archive_files = set()
-        self.archive_directories = {}
-        self.archive_parents = {}
+        self.archive_directories = set()
+        self.archive_ancestors = set()
+        self.order_ancestors = set()
+        self.watch_rebind = False
         self.pane_name = None
         self.native_pane_name = None
         self.tab_detached = False
@@ -211,9 +221,9 @@ class ChromeBloodArchives(mobase.IPluginTool, mobase.IPluginFileMapper):
         if application is not None:
             application.installEventFilter(self.lifetime)
             application.aboutToQuit.connect(self.lifetime.about_to_quit)
-        self.watcher = QFileSystemWatcher(self.lifetime)
-        self.watcher.fileChanged.connect(self.file_changed)
-        self.watcher.directoryChanged.connect(self.file_changed)
+        self.watcher = DirectoryWatcher(self.lifetime)
+        self.watcher.changed.connect(self.files_changed)
+        self.watcher.failed.connect(self.watch_failed)
         self.install_tab()
 
     def install_tab(self, scan_visible=True):
@@ -259,6 +269,8 @@ class ChromeBloodArchives(mobase.IPluginTool, mobase.IPluginFileMapper):
                     break
             self.tab_detached = False
         self.bind_exit_action()
+        if self.panel.state is not None and not self.watcher.running():
+            self.watch_state(self.panel.state)
         if scan_visible and tabs.currentWidget() is self.panel:
             self.panel.visible()
         return True
@@ -477,49 +489,79 @@ class ChromeBloodArchives(mobase.IPluginTool, mobase.IPluginFileMapper):
         self.organizer.refresh(False)
 
     def watch_state(self, state):
-        if self.watcher is None:
+        if self.watcher is None or not self.active():
             return
-        previous = self.watcher.files() + self.watcher.directories()
-        if previous:
-            self.watcher.removePaths(previous)
+        try:
+            self.configure_watches(state)
+        except OSError as error:
+            self.watcher.stop()
+            self.watch_failed(str(error))
+
+    def configure_watches(self, state):
         files = {state["profilePath"], state["writeTarget"]}
         if state.get("orderSource"):
             files.add(state["orderSource"])
-        self.watched_files = {name: self.file_signature(name) for name in files}
-        self.archive_files = {row["physicalPath"] for row in state.get("archiveRows", [])}
-        self.archive_directories = {name: self.archive_names(name) for name in state.get("archiveDirectories", [])}
-        self.archive_parents = {}
-        paths = set()
-        for name in files:
-            path = Path(name)
-            if path.is_file():
-                paths.add(str(path))
-            parent = path.parent
-            while not parent.is_dir() and parent != parent.parent:
-                parent = parent.parent
-            if parent.is_dir():
-                paths.add(str(parent))
-        paths.update(name for name in self.archive_files if Path(name).is_file())
-        for name in self.archive_directories:
-            parent = self.archive_parent(name)
-            if parent is not None:
-                self.archive_parents.setdefault(parent, set()).add(name)
-                paths.add(parent)
-        if paths:
-            self.watcher.addPaths(sorted(paths))
+        archives = {row["physicalPath"] for row in state.get("archiveRows", [])}
+        directories = set(state.get("archiveDirectories", []))
+        self.watched_files = {}
+        self.archive_files = set()
+        self.archive_directories = set()
+        self.archive_ancestors = set()
+        self.order_ancestors = set()
+        profile = self.organizer.profile()
+        game = self.organizer.managedGame()
+        configured = {Path(self.organizer.modsPath()), Path(self.organizer.overwritePath()), Path(profile.absolutePath()).parent, Path(game.gameDirectory().absolutePath())}
+        root_components = configured | {parent for root in configured for parent in root.parents}
+        paths = {name: Path(name) for name in files | archives | directories}
+        links = {}
+        canonical = {}
+        for path in set(paths.values()) | configured:
+            components = (path, *path.parents)
+            for component in components:
+                if component not in links:
+                    try:
+                        tag = component.lstat().st_reparse_tag
+                    except (FileNotFoundError, NotADirectoryError):
+                        tag = 0
+                    links[component] = component.resolve() if tag in (IO_REPARSE_TAG_MOUNT_POINT, IO_REPARSE_TAG_SYMLINK) else None
+            linked = next((component for component in components if links[component] is not None), None)
+            canonical[path] = links[linked] / path.relative_to(linked) if linked is not None else path
+        roots = {canonical[path] for path in configured}
+        roots.update(target.parent for component, target in links.items() if target is not None and component not in root_components)
+        for name, path in paths.items():
+            variants = {path_key(path), path_key(canonical[path])}
+            if name in files:
+                signature = self.file_signature(name)
+                self.watched_files.update({variant: (name, signature) for variant in variants})
+            if name in archives:
+                self.archive_files.update(variants)
+            if name in directories:
+                self.archive_directories.update(variants)
+            for variant in variants:
+                parents = {str(parent) for parent in Path(variant).parents}
+                if name in files:
+                    self.order_ancestors.update(parents)
+                if name in archives or name in directories:
+                    self.archive_ancestors.update(parents)
+                    if name in directories:
+                        self.archive_ancestors.add(variant)
+        existing = set()
+        for root in roots:
+            while not root.is_dir() and root != root.parent:
+                root = root.parent
+            existing.add(root)
+        recursive = {root for root in existing if not any(parent in existing for parent in root.parents)}
+        guarded = {root.parent for root in recursive if root != root.parent and not any(parent in recursive for parent in (root.parent, *root.parent.parents))}
+        watches = {(path_key(root), True) for root in recursive} | {(path_key(root), False) for root in guarded}
+        rebind = self.watch_rebind
+        self.watch_rebind = False
+        self.watcher.configure(watches, set(self.watched_files) | self.archive_files, self.archive_directories, self.archive_ancestors | self.order_ancestors, force=rebind)
 
-    def archive_names(self, name):
-        path = Path(name)
-        try:
-            return tuple(sorted(entry.name for entry in path.iterdir() if entry.suffix.casefold() == ".archive" and entry.is_file())) if path.is_dir() else None
-        except OSError:
-            return None
-
-    def archive_parent(self, name):
-        path = Path(name)
-        while not path.is_dir() and path != path.parent:
-            path = path.parent
-        return str(path) if path.is_dir() else None
+    def watch_failed(self, message):
+        qWarning("Chrome & Blood Archives: archive monitoring stopped: " + message)
+        if self.panel is not None and not self.panel.closed:
+            self.panel.invalidate(rescan=False)
+            self.panel.status.setText("Archive monitoring stopped. Refresh to read the current files. " + message)
 
     def file_signature(self, name):
         path = Path(name)
@@ -537,23 +579,27 @@ class ChromeBloodArchives(mobase.IPluginTool, mobase.IPluginFileMapper):
         except OSError:
             return None
 
-    def file_changed(self, name=None):
+    def files_changed(self, changes):
+        for name, action in changes:
+            if self.file_changed(name, action):
+                break
+
+    def file_changed(self, name=None, action=3):
         if self.bridge is not None and self.bridge.pending is not None and self.bridge.pending["operation"] in ("apply", "undo"):
-            return
-        if name in self.archive_files:
+            return False
+        if name is not None:
+            name = path_key(name)
+        archive_changed = name in self.archive_files or name is not None and Path(name).suffix.casefold() == ".archive" and str(Path(name).parent) in self.archive_directories
+        directory_changed = action != 3 and (name in self.archive_ancestors or name in self.order_ancestors)
+        if archive_changed or directory_changed:
+            self.watch_rebind = self.watch_rebind or directory_changed
             self.changed()
-            return
-        for directory in tuple(self.archive_parents.get(name, ())):
-            if self.archive_names(directory) != self.archive_directories[directory]:
-                self.changed()
-                return
-            parent = self.archive_parent(directory)
-            if parent is not None and parent != name:
-                self.archive_parents[name].discard(directory)
-                self.archive_parents.setdefault(parent, set()).add(directory)
-                self.watcher.addPath(parent)
-        if any(self.file_signature(name) != signature for name, signature in self.watched_files.items()):
+            return True
+        watched = self.watched_files.values() if name is None else (self.watched_files[name],) if name in self.watched_files else ()
+        if any(self.file_signature(path) != signature for path, signature in watched):
             self.changed()
+            return True
+        return False
 
     def disabled(self):
         self.unbind_mod_selection()
@@ -567,13 +613,13 @@ class ChromeBloodArchives(mobase.IPluginTool, mobase.IPluginFileMapper):
         if self.bridge is not None:
             self.bridge.close()
         if self.watcher is not None:
-            previous = self.watcher.files() + self.watcher.directories()
-            if previous:
-                self.watcher.removePaths(previous)
+            self.watcher.stop()
         self.watched_files = {}
         self.archive_files = set()
-        self.archive_directories = {}
-        self.archive_parents = {}
+        self.archive_directories = set()
+        self.archive_ancestors = set()
+        self.order_ancestors = set()
+        self.watch_rebind = False
 
     def enabled(self):
         if not self.closed and self.window is not None:
@@ -590,6 +636,8 @@ class ChromeBloodArchives(mobase.IPluginTool, mobase.IPluginFileMapper):
 
     def destroyed(self, *_):
         self.closed = True
+        if self.watcher is not None:
+            self.watcher.stop()
         application = QCoreApplication.instance()
         if application is not None and self.lifetime is not None:
             application.removeEventFilter(self.lifetime)

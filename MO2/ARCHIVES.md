@@ -29,6 +29,8 @@ Save verifies current inputs and the result, retains backups and refuses unsafe 
 
 Mod and profile changes refresh the visible tab; a hidden tab waits until opened. Unsaved drafts survive refresh and profile switching within the session. They do not survive exit. Normal X, Alt-F4 and File Exit warn about drafts. Save before using MO2's native restart or instance-switch commands; those bypass that warning. Active helper work still drains safely.
 
+Mods can be renamed or removed while Archives is open. If file monitoring stops because a location becomes unavailable, the tab asks you to restore access and Refresh. Save still checks the current files before writing.
+
 Earlier `profiles/<profile>/archive-order/modlist.txt` files remain a fallback. The current format is shared with the included Conflict Studio companion. Older standalone Studio builds may not read it; an already-open companion view needs Refresh after external changes, and stale saves are rejected.
 
 Disabling or removing the plugin keeps saved files but stops mapping its profile order. Re-enable it to restore that mapping. To uninstall, close MO2 and remove `plugins/chrome_blood_archives`. Remove `Tools/Conflict Studio/Mo2Bridge` only if no other installed tool uses it. Retain profile orders and backups if wanted.
