@@ -79,6 +79,11 @@ public sealed class CleanupPreparationService
 
     internal static IEnumerable<CleanupPreparationItem> OfficialFindings(VanillaScanResult scan)
     {
+        foreach (VanillaScanEntry entry in scan.Entries.Where(entry => entry.Status is VanillaEntryStatus.VendorReplacement or VanillaEntryStatus.VendorBackup))
+            yield return new("Preserved DLSS", entry.RelativePath,
+                entry.Status == VanillaEntryStatus.VendorReplacement
+                    ? "NVIDIA-signed DLSS replacement; kept in place. Its signature does not establish game compatibility."
+                    : "Verified DLSS Swapper backup; kept in place so Swapper can restore it.", CleanupEntryStatus.Available);
         foreach (VanillaScanEntry entry in scan.Entries.Where(entry => entry.Status is VanillaEntryStatus.Changed or VanillaEntryStatus.Missing
             or VanillaEntryStatus.Unreadable or VanillaEntryStatus.ReparsePoint))
             yield return new(entry.Status == VanillaEntryStatus.Changed ? "Changed official" : entry.Status == VanillaEntryStatus.Missing ? "Missing official" : "Unreadable",

@@ -310,6 +310,195 @@ public sealed class VanillaGameScannerTests
     }
 
     [TestMethod]
+    [DataRow(@"bin\x64\nvngx_dlss.dll")]
+    [DataRow(@"tools\redmod\bin\nvngx_dlss.dll")]
+    public async Task OriginalDlssFilesKeepOfficialStatusesAndVerifiedBackupsArePreserved(string path)
+    {
+        using TemporaryDirectory temporary = new();
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(temporary.Path, path))!);
+        File.WriteAllText(Path.Combine(temporary.Path, path), "right");
+        File.WriteAllText(Path.Combine(temporary.Path, path + ".dlsss"), "right");
+        VanillaGameScanner scanner = new(TestIndex(path));
+        VanillaScanResult preview = await scanner.ScanAsync(temporary.Path, Manifest);
+        VanillaScanResult verified = await scanner.ScanAsync(temporary.Path, Manifest, true);
+        Assert.AreEqual(VanillaEntryStatus.OfficialUnverified, Entry(preview, path).Status);
+        Assert.AreEqual(VanillaEntryStatus.OfficialVerified, Entry(verified, path).Status);
+        Assert.AreEqual(VanillaEntryStatus.VendorBackup, Entry(preview, path + ".dlsss").Status);
+        Assert.AreEqual(preview.ObservationFingerprint, verified.ObservationFingerprint);
+        Assert.AreEqual(Entry(verified, path).ExpectedSha1, Entry(preview, path).ActualSha1);
+    }
+
+    [TestMethod]
+    [DataRow(@"bin\x64\nvngx_dlss.dll")]
+    [DataRow(@"tools\redmod\bin\nvngx_dlss.dll")]
+    public async Task UnsignedDlssReplacementsAndUnrecognizedBackupsRemainRepairAndCleanupCandidates(string path)
+    {
+        using TemporaryDirectory temporary = new();
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(temporary.Path, path))!);
+        Directory.CreateDirectory(Path.Combine(temporary.Path, "bin", "x64"));
+        Directory.CreateDirectory(Path.Combine(temporary.Path, "other"));
+        File.WriteAllText(Path.Combine(temporary.Path, path), "wrong");
+        string[] extras = [path + ".dlsss", path + ".dlsss.dlsss", @"bin\x64\other.dll.dlsss", @"other\nvngx_dlss.dll", @"other\nvngx_dlss.dll.dlsss"];
+        foreach (string extra in extras) File.WriteAllText(Path.Combine(temporary.Path, extra), "wrong");
+        VanillaGameScanner scanner = new(TestIndex(path));
+        VanillaScanResult result = await scanner.ScanAsync(temporary.Path, Manifest);
+        Assert.IsTrue(result.Complete);
+        Assert.AreEqual(VanillaEntryStatus.Changed, Entry(result, path).Status);
+        foreach (string extra in extras) Assert.AreEqual(VanillaEntryStatus.Extra, Entry(result, extra).Status, extra);
+        File.Delete(Path.Combine(temporary.Path, path));
+        File.WriteAllText(Path.Combine(temporary.Path, path + ".dlsss"), "right");
+        VanillaScanResult missing = await scanner.ScanAsync(temporary.Path, Manifest);
+        Assert.AreEqual(VanillaEntryStatus.Missing, Entry(missing, path).Status);
+        Assert.AreEqual(VanillaEntryStatus.VendorBackup, Entry(missing, path + ".dlsss").Status);
+    }
+
+    [TestMethod]
+    [DataRow(@"bin\x64\nvngx_dlss.dll")]
+    [DataRow(@"tools\redmod\bin\nvngx_dlss.dll")]
+    public async Task DlssExceptionsRequireTheComponentInTheMatchedReference(string path)
+    {
+        using TemporaryDirectory temporary = new();
+        WriteOfficial(temporary.Path, "right");
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(temporary.Path, path))!);
+        File.WriteAllText(Path.Combine(temporary.Path, path + ".dlsss"), "right");
+        VanillaScanResult result = await new VanillaGameScanner(TestIndex()).ScanAsync(temporary.Path, Manifest);
+        Assert.AreEqual(VanillaEntryStatus.Extra, Entry(result, path + ".dlsss").Status);
+    }
+
+    [TestMethod]
+    [DataRow(@"bin\x64\nvngx_dlss.dll")]
+    [DataRow(@"tools\redmod\bin\nvngx_dlss.dll")]
+    public async Task DlssDirectoriesDoNotReceiveVendorFileExceptions(string path)
+    {
+        using TemporaryDirectory temporary = new();
+        Directory.CreateDirectory(Path.Combine(temporary.Path, path));
+        Directory.CreateDirectory(Path.Combine(temporary.Path, path + ".dlsss"));
+        VanillaScanResult result = await new VanillaGameScanner(TestIndex(path)).ScanAsync(temporary.Path, Manifest);
+        Assert.AreEqual(VanillaEntryStatus.Changed, Entry(result, path).Status);
+        Assert.AreEqual(VanillaEntryStatus.Extra, Entry(result, path + ".dlsss").Status);
+    }
+
+    [TestMethod]
+    [DataRow(@"bin\x64\nvngx_dlss.dll")]
+    [DataRow(@"tools\redmod\bin\nvngx_dlss.dll")]
+    public async Task DlssContentChangesInvalidateVerificationEvenWhenMetadataIsRestored(string path)
+    {
+        using TemporaryDirectory temporary = new();
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(temporary.Path, path))!);
+        string fullPath = Path.Combine(temporary.Path, path);
+        File.WriteAllText(fullPath, "right");
+        DateTime writeTime = File.GetLastWriteTimeUtc(fullPath);
+        VanillaGameScanner scanner = new(TestIndex(path));
+        VanillaScanResult verified = await scanner.ScanAsync(temporary.Path, Manifest, true);
+        File.WriteAllText(fullPath, "wrong");
+        File.SetLastWriteTimeUtc(fullPath, writeTime);
+        VanillaScanResult current = await scanner.ScanAsync(temporary.Path, Manifest);
+        Assert.AreEqual(VanillaEntryStatus.Changed, Entry(current, path).Status);
+        Assert.AreNotEqual(verified.ObservationFingerprint, current.ObservationFingerprint);
+        string identity = WindowsCleanupProbe.IdentityOfDirectory(temporary.Path);
+        Assert.IsFalse(PreparationService.CanReuseGameFileVerification(identity, current, identity, verified));
+    }
+
+    [TestMethod]
+    [DataRow(@"tools\redmod\binary\nvngx_dlss.dll")]
+    [DataRow(@"tools\redmod\binextra\nvngx_dlss.dll")]
+    [DataRow(@"other\tools\redmod\bin\nvngx_dlss.dll")]
+    public async Task DlssLookalikeLocationsDoNotReceiveBackupExceptions(string path)
+    {
+        using TemporaryDirectory temporary = new();
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(temporary.Path, path))!);
+        File.WriteAllText(Path.Combine(temporary.Path, path), "right");
+        File.WriteAllText(Path.Combine(temporary.Path, path + ".dlsss"), "right");
+        VanillaScanResult result = await new VanillaGameScanner(TestIndex(path)).ScanAsync(temporary.Path, Manifest);
+        Assert.AreEqual(VanillaEntryStatus.OfficialUnverified, Entry(result, path).Status);
+        Assert.AreEqual(VanillaEntryStatus.Extra, Entry(result, path + ".dlsss").Status);
+    }
+
+    [TestMethod]
+    [TestCategory("GameIndexLive")]
+    public async Task SignedDlssSwapsAndBackupsAreRecognizedWhileWrongComponentsAndDamageAreRejected()
+    {
+        string? root = Environment.GetEnvironmentVariable("CHROMEBLOOD_VERIFY_STEAM25_ROOT");
+        if (string.IsNullOrWhiteSpace(root)) Assert.Inconclusive("Set CHROMEBLOOD_VERIFY_STEAM25_ROOT to test isolated copies of the installed NVIDIA DLLs.");
+        using TemporaryDirectory temporary = new();
+        string[] locations = [@"bin\x64", @"tools\redmod\bin"];
+        string[] components = ["nvngx_dlss.dll", "nvngx_dlssd.dll", "nvngx_dlssg.dll"];
+        foreach (string location in locations)
+        {
+            string directory = Path.Combine(temporary.Path, location);
+            Directory.CreateDirectory(directory);
+            foreach (string component in components)
+            {
+                File.Copy(Path.Combine(root!, location, component), Path.Combine(directory, component));
+                File.Copy(Path.Combine(root!, location, component + ".dlsss"), Path.Combine(directory, component + ".dlsss"));
+            }
+        }
+        ScanProgress progress = new();
+        Stopwatch elapsed = Stopwatch.StartNew();
+        VanillaGameScanner scanner = new();
+        VanillaScanResult recognized = await scanner.ScanAsync(temporary.Path, Manifest, progress: progress);
+        elapsed.Stop();
+        TestContext.WriteLine($"Twelve NVIDIA files: {elapsed.Elapsed.TotalSeconds:F3} seconds; bytes hashed: {progress.Last?.BytesHashed ?? 0}");
+        Assert.IsTrue(recognized.Complete);
+        foreach (string location in locations)
+        {
+            foreach (string component in components)
+            {
+                Assert.AreEqual(VanillaEntryStatus.VendorReplacement, Entry(recognized, Path.Combine(location, component)).Status, Path.Combine(location, component));
+                Assert.AreEqual(VanillaEntryStatus.VendorBackup, Entry(recognized, Path.Combine(location, component + ".dlsss")).Status, Path.Combine(location, component));
+            }
+        }
+        elapsed.Restart();
+        VanillaScanResult installed = await scanner.ScanAsync(root!, Manifest, progress: progress);
+        elapsed.Stop();
+        TestContext.WriteLine($"Installed game preview: {elapsed.Elapsed.TotalSeconds:F3} seconds; entries: {installed.Entries.Count}; bytes hashed: {progress.Last?.BytesHashed ?? 0}");
+        TestContext.WriteLine($"Installed game findings: {installed.Entries.Count(entry => entry.Status == VanillaEntryStatus.Changed)} changed; {installed.Entries.Count(entry => entry.Status == VanillaEntryStatus.Missing)} missing");
+        Assert.IsTrue(installed.Complete);
+        foreach (string location in locations)
+        {
+            foreach (string component in components)
+            {
+                Assert.AreEqual(VanillaEntryStatus.VendorReplacement, Entry(installed, Path.Combine(location, component)).Status, Path.Combine(location, component));
+                Assert.AreEqual(VanillaEntryStatus.VendorBackup, Entry(installed, Path.Combine(location, component + ".dlsss")).Status, Path.Combine(location, component));
+            }
+        }
+        foreach (string location in locations)
+        {
+            string dlss = Path.Combine(temporary.Path, location, components[0]);
+            DateTime writeTime = File.GetLastWriteTimeUtc(dlss);
+            using (FileStream damaged = new(dlss, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            {
+                damaged.Position = 1048576;
+                int value = damaged.ReadByte();
+                damaged.Position--;
+                damaged.WriteByte((byte)(value ^ 1));
+            }
+            File.SetLastWriteTimeUtc(dlss, writeTime);
+            File.Copy(dlss, dlss + ".dlsss", true);
+        }
+        VanillaScanResult corrupt = await scanner.ScanAsync(temporary.Path, Manifest);
+        Assert.AreNotEqual(recognized.ObservationFingerprint, corrupt.ObservationFingerprint);
+        foreach (string location in locations)
+        {
+            Assert.AreEqual(VanillaEntryStatus.Changed, Entry(corrupt, Path.Combine(location, components[0])).Status);
+            Assert.AreEqual(VanillaEntryStatus.Extra, Entry(corrupt, Path.Combine(location, components[0] + ".dlsss")).Status);
+            string dlss = Path.Combine(temporary.Path, location, components[0]);
+            File.Copy(Path.Combine(temporary.Path, location, components[1]), dlss, true);
+            File.Copy(Path.Combine(temporary.Path, location, components[1]), dlss + ".dlsss", true);
+        }
+        VanillaScanResult wrongComponent = await scanner.ScanAsync(temporary.Path, Manifest);
+        foreach (string location in locations)
+        {
+            Assert.AreEqual(VanillaEntryStatus.Changed, Entry(wrongComponent, Path.Combine(location, components[0])).Status);
+            Assert.AreEqual(VanillaEntryStatus.Extra, Entry(wrongComponent, Path.Combine(location, components[0] + ".dlsss")).Status);
+            string componentPath = Path.Combine(location, components[1]);
+            VanillaGameScanner sameSize = new(TestIndex(componentPath, new FileInfo(Path.Combine(temporary.Path, componentPath)).Length));
+            VanillaScanResult sameSizeSwap = await sameSize.ScanAsync(temporary.Path, Manifest);
+            Assert.AreEqual(VanillaEntryStatus.VendorReplacement, Entry(sameSizeSwap, componentPath).Status);
+        }
+    }
+
+    [TestMethod]
     [TestCategory("GameIndexLive")]
     public async Task InstalledSteam25ScanMeasuresOfficialHashVerificationWithoutChangingGameFiles()
     {

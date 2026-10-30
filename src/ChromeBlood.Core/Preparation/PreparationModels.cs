@@ -26,6 +26,7 @@ public sealed record PreparationSnapshot
     public int ChangedOfficialFiles { get; init; }
     public int MissingOfficialFiles { get; init; }
     public int UnreadableGameFiles { get; init; }
+    public int PreservedDlssFiles { get; init; }
     public long CleanupBytes { get; init; }
     public string PlannedBackupRoot { get; init; } = "";
     public string? RecoveryDetail { get; init; }

@@ -2,6 +2,7 @@ using System.Buffers;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using ChromeBlood.Core.Acquisition;
 using ChromeBlood.Core.Cleanup;
@@ -9,7 +10,7 @@ using Microsoft.Win32.SafeHandles;
 
 namespace ChromeBlood.Core.Vanilla;
 
-public enum VanillaEntryStatus { OfficialUnverified, OfficialVerified, Extra, Missing, Changed, Unreadable, ReparsePoint }
+public enum VanillaEntryStatus { OfficialUnverified, OfficialVerified, Extra, Missing, Changed, Unreadable, ReparsePoint, VendorReplacement, VendorBackup }
 
 public sealed record VanillaScanEntry(string RelativePath, bool IsDirectory, VanillaEntryStatus Status,
     long? ExpectedSize = null, long? ActualSize = null, string? ExpectedSha1 = null, string? ActualSha1 = null);
@@ -38,6 +39,7 @@ public sealed class VanillaGameScanner(VanillaGameIndex? index = null)
         if (!profile.Matched) return new(profile, _index.Identity, Array.Empty<VanillaScanEntry>(), verify, false);
         string root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(gameRoot));
         WindowsSecureFileApi api = new();
+        AuthenticodeVerifier authenticode = new();
         using SecureCacheRoot heldRoot = new(root, api, false);
         List<VanillaScanEntry> entries = [];
         HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
@@ -123,13 +125,33 @@ public sealed class VanillaGameScanner(VanillaGameIndex? index = null)
                                 ? metadata.Length == expected!.Size ? VanillaEntryStatus.OfficialUnverified : VanillaEntryStatus.Changed
                                 : VanillaEntryStatus.Extra;
                             string? actualHash = null;
-                            if (officialFile && verify && metadata.Length == expected!.Size)
+                            bool vendorBackup = relative.EndsWith(".dlsss", StringComparison.OrdinalIgnoreCase);
+                            string componentPath = vendorBackup ? relative[..^6] : relative;
+                            string? vendorProduct = VendorProduct(componentPath);
+                            bool vendorCandidate = vendorProduct is not null && _index.Files.TryGetValue(componentPath, out _);
+                            vendorBackup &= vendorCandidate;
+                            if (vendorCandidate || officialFile && verify && metadata.Length == expected!.Size)
                             {
                                 using SecureFileLease? readable = heldDirectory.TryOpenRead(Path.GetFileName(child));
                                 if (readable is null) throw new IOException("The official game file disappeared while scanning.");
-                                actualHash = await HashAsync(readable.Handle, metadata.Length, relative).ConfigureAwait(false);
-                                bool emptyManifestFile = expected.Size == 0 && expected.Sha1 == "0000000000000000000000000000000000000000";
-                                status = emptyManifestFile || actualHash.Equals(expected.Sha1, StringComparison.OrdinalIgnoreCase) ? VanillaEntryStatus.OfficialVerified : VanillaEntryStatus.Changed;
+                                (actualHash, string? contentHash) = await HashAsync(readable.Handle, metadata.Length, relative, vendorCandidate).ConfigureAwait(false);
+                                VanillaFile reference = vendorCandidate ? _index.Files[componentPath] : expected!;
+                                bool emptyManifestFile = reference.Size == 0 && reference.Sha1 == "0000000000000000000000000000000000000000";
+                                bool vanilla = metadata.Length == reference.Size && (emptyManifestFile || actualHash.Equals(reference.Sha1, StringComparison.OrdinalIgnoreCase));
+                                if (vendorBackup) status = vanilla ? VanillaEntryStatus.VendorBackup : VanillaEntryStatus.Extra;
+                                else status = vanilla ? verify ? VanillaEntryStatus.OfficialVerified : VanillaEntryStatus.OfficialUnverified : VanillaEntryStatus.Changed;
+                                if (vendorCandidate)
+                                {
+                                    if (!vanilla && string.Equals(FileVersionInfo.GetVersionInfo(readable.FinalPath).ProductName, vendorProduct, StringComparison.Ordinal))
+                                    {
+                                        AuthenticodeVerdict verdict = authenticode.Verify(readable.Handle, readable.FinalPath, null, cancellationToken);
+                                        if (verdict.Status == AuthenticodeStatus.Trusted && IsNvidiaSigner(verdict.SignerIdentity))
+                                            status = vendorBackup ? VanillaEntryStatus.VendorBackup : VanillaEntryStatus.VendorReplacement;
+                                    }
+                                    VanillaEntryStatus observedStatus = status == VanillaEntryStatus.OfficialVerified ? VanillaEntryStatus.OfficialUnverified : status;
+                                    string key = relative.ToUpperInvariant();
+                                    observations[key] = observations.GetValueOrDefault(key, "Vendor backup") + $":{contentHash}:{observedStatus}";
+                                }
                             }
                             entries.Add(new(relative, false, status, expected?.Size, metadata.Length, expected?.Sha1, actualHash));
                         }
@@ -148,9 +170,10 @@ public sealed class VanillaGameScanner(VanillaGameIndex? index = null)
             }
         }
 
-        async Task<string> HashAsync(SafeFileHandle handle, long length, string relative)
+        async Task<(string Sha1, string? ContentHash)> HashAsync(SafeFileHandle handle, long length, string relative, bool contentIdentity)
         {
             using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA1);
+            using IncrementalHash? contentHash = contentIdentity ? IncrementalHash.CreateHash(HashAlgorithmName.SHA256) : null;
             byte[] buffer = ArrayPool<byte>.Shared.Rent(1048576);
             try
             {
@@ -161,12 +184,13 @@ public sealed class VanillaGameScanner(VanillaGameIndex? index = null)
                     int read = await RandomAccess.ReadAsync(handle, buffer.AsMemory(0, (int)Math.Min(buffer.Length, length - offset)), offset, cancellationToken).ConfigureAwait(false);
                     if (read == 0) throw new IOException("The official game file changed length during verification.");
                     hash.AppendData(buffer, 0, read);
+                    contentHash?.AppendData(buffer, 0, read);
                     offset += read;
                     bytesHashed += read;
                     Report(relative);
                 }
                 if (RandomAccess.GetLength(handle) != length) throw new IOException("The official game file changed length during verification.");
-                return Convert.ToHexStringLower(hash.GetHashAndReset());
+                return (Convert.ToHexStringLower(hash.GetHashAndReset()), contentHash is null ? null : Convert.ToHexStringLower(contentHash.GetHashAndReset()));
             }
             finally { ArrayPool<byte>.Shared.Return(buffer); }
         }
@@ -201,5 +225,44 @@ public sealed class VanillaGameScanner(VanillaGameIndex? index = null)
             progress.Report(new(entries.Count, bytesHashed, relative));
             reportClock.Restart();
         }
+    }
+
+    private static string? VendorProduct(string path)
+    {
+        if (path.Equals(@"bin\x64\nvngx_dlss.dll", StringComparison.OrdinalIgnoreCase)
+            || path.Equals(@"tools\redmod\bin\nvngx_dlss.dll", StringComparison.OrdinalIgnoreCase)) return "NVIDIA Deep Learning SuperSampling";
+        if (path.Equals(@"bin\x64\nvngx_dlssd.dll", StringComparison.OrdinalIgnoreCase)
+            || path.Equals(@"tools\redmod\bin\nvngx_dlssd.dll", StringComparison.OrdinalIgnoreCase)) return "NVIDIA DLSS Ray Reconstruction";
+        if (path.Equals(@"bin\x64\nvngx_dlssg.dll", StringComparison.OrdinalIgnoreCase)
+            || path.Equals(@"tools\redmod\bin\nvngx_dlssg.dll", StringComparison.OrdinalIgnoreCase)) return "NVIDIA DLSS-G MFGLW";
+        return null;
+    }
+
+    private static bool IsNvidiaSigner(string? identity)
+    {
+        if (identity is null) return false;
+        string? commonName = null;
+        string? organization = null;
+        try
+        {
+            foreach (X500RelativeDistinguishedName name in new X500DistinguishedName(identity).EnumerateRelativeDistinguishedNames())
+            {
+                if (name.HasMultipleElements) return false;
+                switch (name.GetSingleElementType().Value)
+                {
+                    case "2.5.4.3":
+                        if (commonName is not null) return false;
+                        commonName = name.GetSingleElementValue();
+                        break;
+                    case "2.5.4.10":
+                        if (organization is not null) return false;
+                        organization = name.GetSingleElementValue();
+                        break;
+                }
+            }
+            return string.Equals(commonName, "NVIDIA Corporation", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(organization, "NVIDIA Corporation", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (CryptographicException) { return false; }
     }
 }

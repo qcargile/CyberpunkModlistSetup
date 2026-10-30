@@ -91,6 +91,10 @@ public sealed class PreparationService
         List<CleanupPreparationItem> items = [.. preview.Items];
         if (scan?.HashVerificationRequested != true && _verifiedGameRoot == identity && _verifiedCleanup is { } verified)
             items.AddRange(verified.Items.Where(item => item.Scope is "Changed official" or "Missing official")
+                .Where(previous => scan?.Entries.Any(entry => entry.RelativePath.Equals(previous.RelativePath, StringComparison.OrdinalIgnoreCase)
+                    && (entry.Status is VanillaEntryStatus.VendorReplacement or VanillaEntryStatus.OfficialVerified
+                        || entry.Status == VanillaEntryStatus.OfficialUnverified && entry.ActualSize == entry.ExpectedSize
+                            && entry.ActualSha1 is not null && entry.ActualSha1.Equals(entry.ExpectedSha1, StringComparison.OrdinalIgnoreCase))) != true)
                 .Where(previous => !items.Any(item => item.Scope == previous.Scope && item.RelativePath == previous.RelativePath)));
         int changed = items.Count(item => item.Scope == "Changed official");
         HashSet<string> changedPaths = items.Where(item => item.Scope == "Changed official").Select(item => item.RelativePath).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -116,6 +120,7 @@ public sealed class PreparationService
             ChangedOfficialFiles = changed,
             MissingOfficialFiles = missing,
             UnreadableGameFiles = unreadable,
+            PreservedDlssFiles = items.Count(item => item.Scope == "Preserved DLSS"),
             CleanupBytes = scan?.Entries.Where(entry => !entry.IsDirectory && entry.Status == VanillaEntryStatus.Extra
                 && !IndexedGameCleanup.IsManagerOwned(entry.RelativePath)
                 || !entry.IsDirectory && changedPaths.Contains(entry.RelativePath))
@@ -187,7 +192,7 @@ public sealed class PreparationService
                     _verifiedCleanup = inspected with
                     {
                         GameFiles = verifiedFiles,
-                        Items = [.. inspected.Items.Where(item => item.Scope is not ("Changed official" or "Missing official" or "Unreadable")),
+                        Items = [.. inspected.Items.Where(item => item.Scope is not ("Changed official" or "Missing official" or "Unreadable" or "Preserved DLSS")),
                             .. CleanupPreparationService.OfficialFindings(verifiedFiles)]
                     };
                     _verifiedGameRoot = current.GameRootIdentity;

@@ -144,20 +144,20 @@ public sealed class PreparationViewModel : INotifyPropertyChanged
         "Repair" => "Your game needs repair",
         "Blocked" => "Check needs attention",
         "Dirty" => "Your game needs cleanup",
-        "Clean" => "Your game is clean",
+        "Clean" => _snapshot?.PreservedDlssFiles > 0 ? "Your game is ready" : "Your game is clean",
         "Unsupported" => "Full check unavailable",
         _ => "Ready to check your game"
     };
-    public string CleanupDetail => CleanupState switch
+    public string CleanupDetail => (CleanupState switch
     {
         "Pending" => "Resume safely from the saved backup.",
         "Repair" => _review && CleanGame ? "Changed official files will be copied to backup; extra files will be removed." : "Repair official files through your game store, then verify again.",
         "Blocked" => "Close the game and mod tools, resolve the findings in Details, then check again.",
         "Dirty" => _review && CleanGame ? $"{ExtraGameLocations:N0} extra {(ExtraGameLocations == 1 ? "item" : "items")} will be backed up and removed." : $"{ExtraGameLocations:N0} extra {(ExtraGameLocations == 1 ? "item" : "items")} found.",
-        "Clean" => "Official files verified. No extra game files found.",
+        "Clean" => _snapshot?.PreservedDlssFiles > 0 ? "Game files checked. No cleanup needed." : "Official files verified. No extra game files found.",
         "Unsupported" => "Known mod locations were checked; a full file reference is unavailable for this installation.",
         _ => "Verify the game files before installing Chrome & Blood."
-    };
+    }) + (_snapshot?.PreservedDlssFiles > 0 ? " Custom DLSS files and verified Swapper backups are kept." : "");
     public string CleanupSymbol => CleanupState is "Clean" ? "✓" : CleanupState is "Unverified" ? "?" : "!";
     public string SecondaryContinueText => CleanupState == "Dirty" ? "Continue without cleanup" : "Continue without verification";
     public string ReviewTitle => PendingCleanup ? "Resume the saved cleanup" : CleanGame ? "Review cleanup" : "Review preparation";

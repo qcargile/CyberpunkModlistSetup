@@ -153,6 +153,30 @@ public sealed class CleanupScreenTests
     }
 
     [TestMethod]
+    public void RecognizedDlssFilesRemainVisibleWithoutRepairOrCleanup()
+    {
+        PreparationSnapshot snapshot = Snapshot() with
+        {
+            CleanupItems = [new(@"bin\x64\nvngx_dlss.dll", "NVIDIA-signed replacement", "Preserved DLSS")],
+            PreservedDlssFiles = 1
+        };
+        PreparationViewModel model = Model(snapshot);
+        Assert.IsFalse(model.NeedsGameRepair);
+        Assert.AreEqual(0, model.ExtraGameLocations);
+        Assert.IsEmpty(model.SelectedCleanupItems);
+        Assert.AreEqual("Unverified", model.CleanupState);
+        StringAssert.Contains(model.CleanupDetail, "Custom DLSS files");
+        model.UpdateSnapshot(snapshot with { GameFileHashesChecked = true });
+        Assert.AreEqual("Clean", model.CleanupState);
+        Assert.AreEqual("Your game is ready", model.CleanupTitle);
+        Assert.AreEqual("Continue to Wabbajack", model.PrimaryText);
+        Assert.IsFalse(model.CleanupDetail.Contains("Official files verified", StringComparison.Ordinal));
+        model.UpdateSnapshot(snapshot with { MissingOfficialFiles = 1, ReadyForHandoff = false });
+        Assert.AreEqual("Repair", model.CleanupState);
+        Assert.IsTrue(model.NeedsGameRepair);
+    }
+
+    [TestMethod]
     public void UnsupportedReferenceKeepsTheLimitedResultVisibleWithoutClaimingClean()
     {
         PreparationViewModel model = Model(Snapshot() with { CleanupItems = [], GameFileReferenceMatched = false,

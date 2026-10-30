@@ -66,6 +66,7 @@ public sealed class CleanupVisualAcceptance
         Capture("clean", basis with { GameFileHashesChecked = true, GameFileVerifiedAt = DateTimeOffset.UtcNow }, false, 1280, 800);
         Capture("not-verified", basis, false, 1280, 800);
         Capture("repair-needed", basis with { ChangedOfficialFiles = 1, MissingOfficialFiles = 2, ReadyForHandoff = false }, false, 1280, 800);
+        Capture("custom-dlss", basis with { GameFileHashesChecked = true, PreservedDlssFiles = 6 }, false, 1280, 800);
         Capture("cleanup-compact", dirty, false, 760, 800);
         Capture("cleanup-recovery", dirty with { PendingCleanup = true, ReadyForHandoff = false, RecoveryDetail = "The previous cleanup was interrupted. Continue with its recorded backup." }, false, 1280, 800);
         Capture("game-selection", basis, false, 1280, 800, "game");

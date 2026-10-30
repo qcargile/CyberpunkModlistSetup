@@ -2,6 +2,8 @@ using System.Text.Json;
 using ChromeBlood.Core.Acquisition;
 using ChromeBlood.Core.Parity;
 using ChromeBlood.Core.Preparation;
+using ChromeBlood.Core.Cleanup;
+using ChromeBlood.Core.Vanilla;
 using ChromeBlood.Testing;
 using ChromeBlood.Setup.ViewModels;
 
@@ -10,6 +12,35 @@ namespace ChromeBlood.Setup.Tests;
 [TestClass]
 public sealed class PreparationTests
 {
+    [TestMethod]
+    [DataRow(VanillaEntryStatus.VendorReplacement)]
+    [DataRow(VanillaEntryStatus.OfficialUnverified)]
+    public void RecognizedDlssReplacementOrRestoredOriginalClearsItsOldRepairFindingButKeepsUnrelatedDamage(VanillaEntryStatus current)
+    {
+        PreparationService service = new();
+        CleanupPreparationPreview previous = new([
+            new("Changed official", @"bin\x64\nvngx_dlss.dll", "Changed", CleanupEntryStatus.Available),
+            new("Changed official", @"bin\x64\Cyberpunk2077.exe", "Changed", CleanupEntryStatus.Available)], [], "backup", "settings");
+        const System.Reflection.BindingFlags fields = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        typeof(PreparationService).GetField("_verifiedGameRoot", fields)!.SetValue(service, "game");
+        typeof(PreparationService).GetField("_verifiedCleanup", fields)!.SetValue(service, previous);
+        VanillaScanResult scan = new(new(true, "Matched"), "reference", [
+            new(@"bin\x64\nvngx_dlss.dll", false, current, 5, 5, "abcdef", "abcdef"),
+            new(@"bin\x64\nvngx_dlss.dll.dlsss", false, VanillaEntryStatus.VendorBackup)], false, true);
+        CleanupPreparationPreview preview = new(CleanupPreparationService.OfficialFindings(scan).ToArray(), [], "backup", "settings") { GameFiles = scan };
+        PreparationSnapshot snapshot = (PreparationSnapshot)typeof(PreparationService).GetMethod("WithCleanup", fields)!
+            .Invoke(service, [new PreparationSnapshot(), preview, "game"])!;
+        Assert.AreEqual(current == VanillaEntryStatus.VendorReplacement ? 2 : 1, snapshot.PreservedDlssFiles);
+        Assert.AreEqual(1, snapshot.ChangedOfficialFiles);
+        Assert.IsFalse(snapshot.ReadyForHandoff);
+        Assert.AreEqual(@"bin\x64\Cyberpunk2077.exe", snapshot.CleanupItems.Single(item => item.Scope == "Changed official").Path);
+        typeof(PreparationService).GetField("_verifiedCleanup", fields)!.SetValue(service, null);
+        snapshot = (PreparationSnapshot)typeof(PreparationService).GetMethod("WithCleanup", fields)!
+            .Invoke(service, [new PreparationSnapshot(), preview, "game"])!;
+        Assert.IsTrue(snapshot.ReadyForHandoff);
+        Assert.AreEqual(0L, snapshot.CleanupBytes);
+    }
+
     [TestMethod]
     public async Task ALaunchedVendorFinishesBeforeARecordingFailureReturns()
     {
