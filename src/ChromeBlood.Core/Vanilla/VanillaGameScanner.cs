@@ -13,7 +13,10 @@ namespace ChromeBlood.Core.Vanilla;
 public enum VanillaEntryStatus { OfficialUnverified, OfficialVerified, Extra, Missing, Changed, Unreadable, ReparsePoint, VendorReplacement, VendorBackup }
 
 public sealed record VanillaScanEntry(string RelativePath, bool IsDirectory, VanillaEntryStatus Status,
-    long? ExpectedSize = null, long? ActualSize = null, string? ExpectedSha1 = null, string? ActualSha1 = null);
+    long? ExpectedSize = null, long? ActualSize = null, string? ExpectedSha1 = null, string? ActualSha1 = null)
+{
+    public string? ActualSha256 { get; init; }
+}
 
 public sealed record VanillaScanProgress(int EntriesScanned, long BytesHashed, string CurrentPath);
 
@@ -125,6 +128,7 @@ public sealed class VanillaGameScanner(VanillaGameIndex? index = null)
                                 ? metadata.Length == expected!.Size ? VanillaEntryStatus.OfficialUnverified : VanillaEntryStatus.Changed
                                 : VanillaEntryStatus.Extra;
                             string? actualHash = null;
+                            string? contentHash = null;
                             bool vendorBackup = relative.EndsWith(".dlsss", StringComparison.OrdinalIgnoreCase);
                             string componentPath = vendorBackup ? relative[..^6] : relative;
                             string? vendorProduct = VendorProduct(componentPath);
@@ -134,7 +138,7 @@ public sealed class VanillaGameScanner(VanillaGameIndex? index = null)
                             {
                                 using SecureFileLease? readable = heldDirectory.TryOpenRead(Path.GetFileName(child));
                                 if (readable is null) throw new IOException("The official game file disappeared while scanning.");
-                                (actualHash, string? contentHash) = await HashAsync(readable.Handle, metadata.Length, relative, vendorCandidate).ConfigureAwait(false);
+                                (actualHash, contentHash) = await HashAsync(readable.Handle, metadata.Length, relative, vendorCandidate).ConfigureAwait(false);
                                 VanillaFile reference = vendorCandidate ? _index.Files[componentPath] : expected!;
                                 bool emptyManifestFile = reference.Size == 0 && reference.Sha1 == "0000000000000000000000000000000000000000";
                                 bool vanilla = metadata.Length == reference.Size && (emptyManifestFile || actualHash.Equals(reference.Sha1, StringComparison.OrdinalIgnoreCase));
@@ -153,7 +157,7 @@ public sealed class VanillaGameScanner(VanillaGameIndex? index = null)
                                     observations[key] = observations.GetValueOrDefault(key, "Vendor backup") + $":{contentHash}:{observedStatus}";
                                 }
                             }
-                            entries.Add(new(relative, false, status, expected?.Size, metadata.Length, expected?.Sha1, actualHash));
+                            entries.Add(new(relative, false, status, expected?.Size, metadata.Length, expected?.Sha1, actualHash) { ActualSha256 = contentHash });
                         }
                     }
                     catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or PackageAcquisitionException or Win32Exception)

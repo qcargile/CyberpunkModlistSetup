@@ -35,17 +35,6 @@
         </Style>
         <Style x:Key="ChoiceTitle" TargetType="TextBlock"><Setter Property="FontSize" Value="14"/><Setter Property="FontWeight" Value="SemiBold"/><Setter Property="TextWrapping" Value="Wrap"/></Style>
         <Style x:Key="ChoiceDetail" TargetType="TextBlock"><Setter Property="FontSize" Value="12"/><Setter Property="Foreground" Value="{DynamicResource MutedBrush}"/><Setter Property="TextWrapping" Value="Wrap"/><Setter Property="Margin" Value="0,4,0,0"/></Style>
-        <Style x:Key="CleanupStatusText" TargetType="TextBlock">
-            <Setter Property="Foreground" Value="{DynamicResource ChromeBrush}"/>
-            <Style.Triggers>
-                <DataTrigger Binding="{Binding CleanupState}" Value="Clean"><Setter Property="Foreground" Value="{DynamicResource SuccessBrush}"/></DataTrigger>
-                <DataTrigger Binding="{Binding CleanupState}" Value="Dirty"><Setter Property="Foreground" Value="{DynamicResource WarningBrush}"/></DataTrigger>
-                <DataTrigger Binding="{Binding CleanupState}" Value="Pending"><Setter Property="Foreground" Value="{DynamicResource WarningBrush}"/></DataTrigger>
-                <DataTrigger Binding="{Binding CleanupState}" Value="Unsupported"><Setter Property="Foreground" Value="{DynamicResource WarningBrush}"/></DataTrigger>
-                <DataTrigger Binding="{Binding CleanupState}" Value="Repair"><Setter Property="Foreground" Value="{DynamicResource ErrorBrush}"/></DataTrigger>
-                <DataTrigger Binding="{Binding CleanupState}" Value="Blocked"><Setter Property="Foreground" Value="{DynamicResource ErrorBrush}"/></DataTrigger>
-            </Style.Triggers>
-        </Style>
         <DataTemplate x:Key="RequirementRow">
             <Border BorderBrush="{DynamicResource RuleBrush}" BorderThickness="0,0,0,1" Padding="0,12">
                 <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -108,45 +97,71 @@
                                     <StackPanel Margin="0,20,0,0" Visibility="{Binding HasMultipleGames, Converter={StaticResource VisibleWhenTrue}}"><TextBlock Text="More than one installation was found" Style="{StaticResource PlanFieldLabel}" Margin="0,0,0,8"/><ComboBox ItemsSource="{Binding GameCandidates}" SelectedItem="{Binding SelectedGame}" DisplayMemberPath="Root" AutomationProperties.Name="Choose Cyberpunk 2077 installation"/></StackPanel>
                                     <TextBlock Text="{Binding GameDetail}" Foreground="{DynamicResource MutedBrush}" FontSize="13" Margin="0,12,0,22" TextWrapping="Wrap"/>
                                     <Button Content="Check again" Command="{Binding RefreshCommand}" Style="{StaticResource QuietButton}" HorizontalAlignment="Left"/>
+                                        <StackPanel Margin="0,20,0,0">
+                                            <TextBlock Text="Wabbajack app folder" FontFamily="{StaticResource SectionFont}" FontSize="18"/>
+                                            <TextBlock Text="{Binding WabbajackDirectory}" FontSize="13" TextWrapping="Wrap" Foreground="{DynamicResource MutedBrush}" Margin="0,6,0,8"/>
+                                            <StackPanel Visibility="{Binding HasWabbajackLocationWarning, Converter={StaticResource VisibleWhenTrue}}" Margin="0,0,0,10">
+                                                <TextBlock Text="{Binding WabbajackLocationDetail}" FontSize="13" TextWrapping="Wrap" Foreground="{DynamicResource WarningBrush}"/>
+                                                <Button Content="Use this folder anyway" Command="{Binding AcceptWabbajackFolderCommand}" Style="{StaticResource QuietLinkButton}" HorizontalAlignment="Left" Margin="0,6,0,0" Visibility="{Binding CanUseWabbajackFolderAnyway, Converter={StaticResource VisibleWhenTrue}}"/>
+                                            </StackPanel>
+                                            <WrapPanel><Button Content="Change folder" Command="{Binding BrowseWabbajackCommand}" Style="{StaticResource QuietButton}" Margin="0,0,10,8"/><Button Content="Use existing Wabbajack.exe" Command="{Binding UseExistingWabbajackCommand}" Style="{StaticResource QuietButton}" Margin="0,0,0,8"/></WrapPanel>
+                                            <TextBlock Text="Backup folders" FontFamily="{StaticResource SectionFont}" FontSize="18" Margin="0,16,0,8"/><TextBlock Text="Automatic backups use the same drive as their source." FontSize="12" Foreground="{DynamicResource MutedBrush}" TextWrapping="Wrap" Margin="0,0,0,10"/>
+                                            <TextBlock Text="Game files" Style="{StaticResource PlanFieldLabel}"/>
+                                            <TextBlock Text="{Binding GameBackupLocation}" FontSize="13" TextWrapping="Wrap" Foreground="{DynamicResource MutedBrush}" Margin="0,4,0,6"/>
+                                            <Button Content="Change game backup folder" Command="{Binding BrowseGameBackupCommand}" Style="{StaticResource QuietLinkButton}" HorizontalAlignment="Left"/>
+                                            <TextBlock Text="Settings and crash reports" Style="{StaticResource PlanFieldLabel}" Margin="0,12,0,0"/>
+                                            <TextBlock Text="{Binding SettingsBackupLocation}" FontSize="13" TextWrapping="Wrap" Foreground="{DynamicResource MutedBrush}" Margin="0,4,0,6"/>
+                                            <Button Content="Change settings backup folder" Command="{Binding BrowseSettingsBackupCommand}" Style="{StaticResource QuietLinkButton}" HorizontalAlignment="Left"/>
+                                        </StackPanel>
                                 </StackPanel>
                                 <StackPanel Visibility="{Binding ShowCleanup, Converter={StaticResource VisibleWhenTrue}}">
-                                    <Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{Binding Foreground, ElementName=CleanupStatus}" BorderThickness="5,0,0,0" Padding="26,22">
+                                    <Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource RuleBrush}" BorderThickness="1" Padding="22">
                                         <StackPanel>
-                                            <TextBlock Text="{Binding ReviewTitle}" FontFamily="{StaticResource SectionFont}" FontSize="15" Foreground="{DynamicResource ChromeBrush}" Margin="0,0,0,20" Visibility="{Binding IsReview, Converter={StaticResource VisibleWhenTrue}}"/>
-                                            <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                                                <Border Width="64" Height="64" CornerRadius="32" BorderThickness="2" BorderBrush="{Binding Foreground, ElementName=CleanupStatus}" VerticalAlignment="Top" Margin="0,5,24,0"><TextBlock Text="{Binding CleanupSymbol}" FontFamily="Segoe UI Symbol" FontSize="35" Style="{StaticResource CleanupStatusText}" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
-                                                <StackPanel Grid.Column="1">
-                                                    <TextBlock x:Name="CleanupStatus" Text="{Binding CleanupTitle}" FontFamily="{StaticResource DisplayFont}" FontSize="46" FontWeight="Bold" TextWrapping="Wrap" Style="{StaticResource CleanupStatusText}" AutomationProperties.LiveSetting="Polite"/>
-                                                    <TextBlock Text="{Binding CleanupDetail}" FontSize="15" Foreground="{DynamicResource ChromeBrush}" TextWrapping="Wrap" Margin="0,9,0,0"/>
-                                                    <TextBlock Text="{Binding CleanupFailure}" FontSize="13" Foreground="{DynamicResource ChromeBrush}" TextWrapping="Wrap" Margin="0,16,0,0" Visibility="{Binding HasCleanupFailure, Converter={StaticResource VisibleWhenTrue}}" AutomationProperties.LiveSetting="Polite"/>
-                                                    <TextBlock Text="Removed files are backed up. Saves are kept." FontSize="13" Foreground="{DynamicResource MutedBrush}" TextWrapping="Wrap" Margin="0,16,0,0"/>
+                                            <TextBlock x:Name="CleanupStatus" Text="{Binding CleanupTitle}" FontFamily="{StaticResource DisplayFont}" FontSize="30" FontWeight="Bold" Foreground="{DynamicResource WarmBrush}" AutomationProperties.LiveSetting="Polite"/>
+                                            <TextBlock Text="{Binding CleanupDetail}" FontSize="14" Foreground="{DynamicResource ChromeBrush}" TextWrapping="Wrap" Margin="0,6,0,14"/>
+                                            <WrapPanel Visibility="{Binding ShowChecklist, Converter={StaticResource VisibleWhenTrue}}">
+                                                <Button Content="Keep my changes" Command="{Binding KeepMyChangesCommand}" Style="{StaticResource QuietButton}" Margin="0,0,10,8" Visibility="{Binding HasFileChoices, Converter={StaticResource VisibleWhenTrue}}"/>
+                                                <Button Content="Review cleanup" Command="{Binding ReviewCleanupCommand}" Style="{StaticResource QuietButton}" Margin="0,0,10,8"/>
+                                                <Button Content="Verify files" Command="{Binding CheckGameFilesCommand}" Style="{StaticResource QuietLinkButton}" Margin="0,0,0,8"/>
+                                            </WrapPanel>
+                                            <Expander Header="{Binding FilesToReviewTitle}" IsExpanded="{Binding ShowFileChoices}" Foreground="{DynamicResource ChromeBrush}" Visibility="{Binding HasFileChoices, Converter={StaticResource VisibleWhenTrue}}" Margin="0,10,0,0">
+                                                <StackPanel>
+                                                    <TextBlock Text="Check Keep for files you want to leave in place." FontSize="13" Foreground="{DynamicResource MutedBrush}" Margin="0,10,0,6"/>
+                                                    <ListBox ItemsSource="{Binding FileChoices}" IsEnabled="{Binding CanChooseFreshCleanup}" MaxHeight="260" Background="Transparent" BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.CanContentScroll="True" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling">
+                                                        <ListBox.ItemContainerStyle><Style TargetType="ListBoxItem"><Setter Property="HorizontalContentAlignment" Value="Stretch"/><Setter Property="Padding" Value="0"/></Style></ListBox.ItemContainerStyle>
+                                                        <ListBox.ItemTemplate><DataTemplate><Grid Margin="0,8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="{Binding Path}" Foreground="{DynamicResource WarmBrush}" FontSize="13" TextWrapping="Wrap"/><TextBlock Text="{Binding Detail}" Foreground="{DynamicResource MutedBrush}" FontSize="12" Margin="0,3,0,0"/></StackPanel><CheckBox Grid.Column="1" Content="Keep" IsChecked="{Binding Keep}" VerticalAlignment="Center" Margin="18,0,4,0" Foreground="{DynamicResource ChromeBrush}"/></Grid></DataTemplate></ListBox.ItemTemplate>
+                                                    </ListBox>
                                                 </StackPanel>
-                                            </Grid>
-                                            <Button Content="Back up changed files before repair" Command="{Binding ReviewCleanupCommand}" Style="{StaticResource QuietButton}" HorizontalAlignment="Left" Margin="88,20,0,0" Visibility="{Binding ShowOfficialBackupAction, Converter={StaticResource VisibleWhenTrue}}"/>
-                                            <Grid Margin="0,18,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                                            <Expander x:Name="CleanupDetails" Header="Details and backups" Foreground="{DynamicResource ChromeBrush}"/>
-                                            <Button Grid.Column="1" Content="{Binding SecondaryContinueText}" Command="{Binding ContinueWithoutCleanupCommand}" Style="{StaticResource QuietLinkButton}" BorderThickness="0" MinHeight="24" Padding="8,0" Margin="16,0,0,0" VerticalAlignment="Top" Visibility="{Binding ShowSecondaryContinue, Converter={StaticResource VisibleWhenTrue}}"/>
-                                            <StackPanel Grid.Row="1" Grid.ColumnSpan="2" Visibility="{Binding IsExpanded, ElementName=CleanupDetails, Converter={StaticResource VisibleWhenTrue}}">
-                                                <StackPanel Margin="0,14,0,0">
-                                                    <TextBlock Text="{Binding CleanupReferenceDetail}" Foreground="{DynamicResource MutedBrush}" FontSize="13" TextWrapping="Wrap"/>
+                                            </Expander>
+                                            <Expander Header="Manual cleanup instructions" Foreground="{DynamicResource ChromeBrush}" Margin="0,10,0,0" Visibility="{Binding ShowManualCleanup, Converter={StaticResource VisibleWhenTrue}}">
+                                                <StackPanel Margin="0,10,0,0">
+                                                    <TextBlock Text="{Binding ManualCleanupGuidance}" TextWrapping="Wrap" FontSize="13" Foreground="{DynamicResource ChromeBrush}"/>
+                                                    <WrapPanel Margin="0,10,0,0"><Button Content="Open game folder" Command="{Binding OpenGameFolderCommand}" Style="{StaticResource QuietLinkButton}" Margin="0,0,20,0"/><Button Content="Open backup folder" Command="{Binding OpenBackupCommand}" Style="{StaticResource QuietLinkButton}" Visibility="{Binding HasBackup, Converter={StaticResource VisibleWhenTrue}}"/></WrapPanel>
+                                                    <ListBox ItemsSource="{Binding ManualCleanupItems}" MaxHeight="240" Background="Transparent" BorderThickness="0" Margin="0,10,0,0" ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.CanContentScroll="True" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling">
+                                                        <ListBox.ItemContainerStyle><Style TargetType="ListBoxItem"><Setter Property="HorizontalContentAlignment" Value="Stretch"/><Setter Property="Padding" Value="0"/></Style></ListBox.ItemContainerStyle>
+                                                        <ListBox.ItemTemplate><DataTemplate><StackPanel Margin="0,8"><TextBlock Text="{Binding Path}" TextWrapping="Wrap" FontSize="13" Foreground="{DynamicResource WarmBrush}"/><TextBlock Text="{Binding Reason}" TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource MutedBrush}" Margin="0,3,0,0"/></StackPanel></DataTemplate></ListBox.ItemTemplate>
+                                                    </ListBox>
+                                                </StackPanel>
+                                            </Expander>
+                                            <Expander x:Name="CleanupDetails" Header="Technical details and backups" Foreground="{DynamicResource MutedBrush}" Margin="0,10,0,0">
+                                                <StackPanel Margin="0,10,0,0">
+                                                    <TextBlock Text="{Binding CleanupFailure}" FontSize="13" Foreground="{DynamicResource WarningBrush}" TextWrapping="Wrap" Visibility="{Binding HasCleanupFailure, Converter={StaticResource VisibleWhenTrue}}"/>
+                                                    <TextBlock Text="{Binding RecoveryDetail}" FontSize="13" Foreground="{DynamicResource WarningBrush}" TextWrapping="Wrap" Margin="0,10,0,0" Visibility="{Binding HasRecoveryDetail, Converter={StaticResource VisibleWhenTrue}}"/>
+                                                    <TextBlock Text="{Binding CleanupReferenceDetail}" Foreground="{DynamicResource MutedBrush}" FontSize="13" TextWrapping="Wrap" Margin="0,10,0,0"/>
                                                     <TextBlock Text="{Binding GameFileCheckDetail}" Foreground="{DynamicResource MutedBrush}" FontSize="13" TextWrapping="Wrap" Margin="0,10,0,0"/>
                                                     <TextBlock Text="{Binding BackupSizeDetail}" Foreground="{DynamicResource MutedBrush}" FontSize="13" TextWrapping="Wrap" Margin="0,10,0,0"/>
-                                                    <StackPanel Margin="0,14,0,0" Visibility="{Binding HasPlannedBackup, Converter={StaticResource VisibleWhenTrue}}"><TextBlock Text="Backup locations" Style="{StaticResource PlanFieldLabel}"/><TextBlock Text="{Binding PlannedBackupRoot}" Foreground="{DynamicResource MutedBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,5,0,0"/></StackPanel>
-                                                    <StackPanel Margin="0,14,0,0" Visibility="{Binding HasBackup, Converter={StaticResource VisibleWhenTrue}}"><TextBlock Text="Saved backup" Style="{StaticResource PlanFieldLabel}"/><TextBlock Text="{Binding BackupRoot}" Foreground="{DynamicResource MutedBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,5,0,8"/><Button Content="Open backup folder" Command="{Binding OpenBackupCommand}" Style="{StaticResource QuietLinkButton}" HorizontalAlignment="Left"/></StackPanel>
-                                                    <TextBlock Text="{Binding RecoveryDetail}" Foreground="{DynamicResource WarningBrush}" FontSize="13" TextWrapping="Wrap" Margin="0,12,0,0" Visibility="{Binding HasRecoveryDetail, Converter={StaticResource VisibleWhenTrue}}"/>
-                                                    <ListBox ItemsSource="{Binding CleanupItems}" MaxHeight="280" Background="Transparent" BorderThickness="0" Margin="0,14,0,8" ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.CanContentScroll="True" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling">
-                                                        <ListBox.ItemContainerStyle><Style TargetType="ListBoxItem"><Setter Property="HorizontalContentAlignment" Value="Stretch"/><Setter Property="Padding" Value="0"/><Setter Property="Foreground" Value="{DynamicResource WarmBrush}"/></Style></ListBox.ItemContainerStyle>
-                                                        <ListBox.ItemTemplate><DataTemplate><Border BorderBrush="{DynamicResource RuleBrush}" BorderThickness="0,0,0,1" Padding="0,9"><StackPanel><TextBlock Text="{Binding Path}" FontSize="13" TextWrapping="Wrap"/><TextBlock Text="{Binding Reason}" FontSize="12" Foreground="{DynamicResource MutedBrush}" TextWrapping="Wrap" Margin="0,3,0,0"/></StackPanel></Border></DataTemplate></ListBox.ItemTemplate>
-                                                    </ListBox>
-                                                    <TextBlock Text="Saved Games and MO2/download folders outside this game folder are untouched. Extra files inside it can move to backup. Changed official files are copied to backup and left for store repair." Foreground="{DynamicResource MutedBrush}" FontSize="13" TextWrapping="Wrap" Margin="0,4,0,8"/>
-                                                    <WrapPanel><Button Content="Verify game files" Command="{Binding CheckGameFilesCommand}" Style="{StaticResource QuietLinkButton}" Margin="0,0,20,0"/><Button Content="Review cleanup" Command="{Binding ReviewCleanupCommand}" Style="{StaticResource QuietLinkButton}"/></WrapPanel>
+                                                    <TextBlock Text="{Binding PlannedBackupRoot}" Foreground="{DynamicResource MutedBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,10,0,0"/>
+                                                    <TextBlock Text="Saved Games and MO2/download folders outside the game folder are untouched. Kept files stay in place. Other selected extras move to backup. Changed official files are copied and left in place." Foreground="{DynamicResource MutedBrush}" FontSize="13" TextWrapping="Wrap" Margin="0,10,0,0"/>
                                                 </StackPanel>
-                                            </StackPanel>
-                                            </Grid>
+                                            </Expander>
                                         </StackPanel>
                                     </Border>
                                     <StackPanel Margin="0,20,0,0" Visibility="{Binding IsReview, Converter={StaticResource VisibleWhenTrue}}">
                                         <TextBlock Text="{Binding ReviewReminder}" FontSize="13" Foreground="{DynamicResource ChromeBrush}" TextWrapping="Wrap"/>
+                                        <ListBox ItemsSource="{Binding SelectedCleanupItems}" MaxHeight="200" Background="Transparent" BorderThickness="0" Margin="0,12,0,0" ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.CanContentScroll="True" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling">
+                                            <ListBox.ItemContainerStyle><Style TargetType="ListBoxItem"><Setter Property="HorizontalContentAlignment" Value="Stretch"/><Setter Property="Padding" Value="0"/></Style></ListBox.ItemContainerStyle>
+                                            <ListBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Path}" TextWrapping="Wrap" Foreground="{DynamicResource ChromeBrush}" FontSize="13" Margin="0,5"/></DataTemplate></ListBox.ItemTemplate>
+                                        </ListBox>
                                         <StackPanel Margin="0,20,0,0" Visibility="{Binding HasAdditionalActions, Converter={StaticResource VisibleWhenTrue}}">
                                             <TextBlock Text="Selected preparation" FontFamily="{StaticResource SectionFont}" FontSize="18" Margin="0,0,0,10"/>
                                             <ItemsControl ItemsSource="{Binding ReviewedPreparationActions}"><ItemsControl.ItemTemplate><DataTemplate><Grid Margin="0,7"><Grid.ColumnDefinitions><ColumnDefinition Width="24"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="✓" Foreground="{DynamicResource SuccessBrush}"/><TextBlock Grid.Column="1" Text="{Binding}" FontSize="14" TextWrapping="Wrap"/></Grid></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
@@ -158,6 +173,7 @@
                                             <ItemsControl ItemsSource="{Binding ManualChecks}" ItemTemplate="{StaticResource RequirementRow}"/>
                                             <Button Content="Choose Wabbajack app folder" Command="{Binding BrowseWabbajackCommand}" Style="{StaticResource QuietButton}" HorizontalAlignment="Left" Margin="0,12,0,0" Visibility="{Binding NeedsWabbajackFolder, Converter={StaticResource VisibleWhenTrue}}"/>
                                         </StackPanel>
+                                        <Button Content="Prepare Windows and Wabbajack" Command="{Binding ReviewPreparationCommand}" Style="{StaticResource QuietButton}" HorizontalAlignment="Left" Margin="0,0,0,16" Visibility="{Binding HasOtherPreparation, Converter={StaticResource VisibleWhenTrue}}"/>
                                         <Grid x:Name="PreparationChoices"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition x:Name="ChoicesGap" Width="32"/><ColumnDefinition x:Name="OptionalColumn" Width="*"/></Grid.ColumnDefinitions><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                                             <StackPanel>
                                                 <TextBlock Text="Needed for installation" FontFamily="{StaticResource SectionFont}" FontSize="20"/>
@@ -177,13 +193,20 @@
                                             </StackPanel>
                                         </Grid>
                                         <Expander Header="{Binding ReadyChecksTitle}" Foreground="{DynamicResource MutedBrush}" Margin="0,16,0,0" Visibility="{Binding HasReadyChecks, Converter={StaticResource VisibleWhenTrue}}"><ItemsControl ItemsSource="{Binding ReadyChecks}" Margin="0,8,0,0"><ItemsControl.ItemTemplate><DataTemplate><Grid Margin="0,7"><Grid.ColumnDefinitions><ColumnDefinition Width="22"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="✓" Foreground="{DynamicResource SuccessBrush}"/><StackPanel Grid.Column="1"><TextBlock Text="{Binding Title}" FontSize="13"/><TextBlock Text="{Binding Detail}" FontSize="12" Foreground="{DynamicResource MutedBrush}" TextWrapping="Wrap" Margin="0,3,0,0"/></StackPanel></Grid></DataTemplate></ItemsControl.ItemTemplate></ItemsControl></Expander>
-                                        <Expander Header="Wabbajack app location" Foreground="{DynamicResource MutedBrush}" Margin="0,12,0,0"><StackPanel Margin="0,10,0,0"><TextBlock Text="{Binding WabbajackDirectory}" FontSize="13" TextWrapping="Wrap" Foreground="{DynamicResource MutedBrush}"/><Button Content="Change app folder" Command="{Binding BrowseWabbajackCommand}" Style="{StaticResource QuietLinkButton}" HorizontalAlignment="Left" Margin="0,6,0,0"/></StackPanel></Expander>
+                                        <Expander Header="Manual installation instructions" Foreground="{DynamicResource ChromeBrush}" Margin="0,12,0,0" Visibility="{Binding HasAutomaticPreparation, Converter={StaticResource VisibleWhenTrue}}"><ItemsControl ItemsSource="{Binding PreparationActions}" ItemTemplate="{StaticResource RequirementRow}" Margin="0,8,0,0"/></Expander>
+
                                     </StackPanel>
                                 </StackPanel>
                                 <StackPanel Visibility="{Binding IsWabbajackPage, Converter={StaticResource VisibleWhenTrue}}">
-                                    <TextBlock Text="Continue in Wabbajack" FontWeight="SemiBold"/>
-                                    <TextBlock Text="Open the Chrome &amp; Blood listing, sign in to Nexus, then choose your installation and download folders there." Foreground="{DynamicResource MutedBrush}" Margin="0,10,0,24" TextWrapping="Wrap"/>
-                                    <Border Style="{StaticResource PanelBorder}" Padding="20"><StackPanel><TextBlock Text="Chrome &amp; Blood" FontFamily="{StaticResource DisplayFont}" FontSize="28" FontWeight="Bold"/><TextBlock Text="Cyberpunk 2077" Foreground="{DynamicResource MutedBrush}" FontSize="13" Margin="0,4,0,16"/><TextBlock Text="{Binding HandoffDetail}" Foreground="{DynamicResource ChromeBrush}" TextWrapping="Wrap"/></StackPanel></Border>
+                                    <TextBlock Text="{Binding HandoffDetail}" TextWrapping="Wrap" Foreground="{DynamicResource ChromeBrush}" Margin="0,0,0,18"/>
+                                    <TextBlock Text="Wabbajack app folder" Style="{StaticResource PlanFieldLabel}"/>
+                                    <TextBlock Text="{Binding WabbajackDirectory}" FontSize="14" TextWrapping="Wrap" Margin="0,6,0,12"/>
+                                    <StackPanel Visibility="{Binding HasWabbajackLocationWarning, Converter={StaticResource VisibleWhenTrue}}" Margin="0,0,0,10">
+                                        <TextBlock Text="{Binding WabbajackLocationDetail}" FontSize="13" TextWrapping="Wrap" Foreground="{DynamicResource WarningBrush}"/>
+                                        <Button Content="Use this folder anyway" Command="{Binding AcceptWabbajackFolderCommand}" Style="{StaticResource QuietLinkButton}" HorizontalAlignment="Left" Margin="0,6,0,0" Visibility="{Binding CanUseWabbajackFolderAnyway, Converter={StaticResource VisibleWhenTrue}}"/>
+                                    </StackPanel>
+                                    <WrapPanel><Button Content="Change folder" Command="{Binding BrowseWabbajackCommand}" Style="{StaticResource QuietButton}" Margin="0,0,10,10"/><Button Content="Use existing Wabbajack.exe" Command="{Binding UseExistingWabbajackCommand}" Style="{StaticResource QuietButton}" Margin="0,0,10,10"/><Button Content="Open folder" Command="{Binding OpenWabbajackFolderCommand}" Style="{StaticResource QuietLinkButton}" Margin="0,0,0,10"/></WrapPanel>
+                                    <TextBlock Text="Prefer to do it yourself? Close Setup, open Wabbajack and search for Chrome &amp; Blood." TextWrapping="Wrap" FontSize="13" Foreground="{DynamicResource MutedBrush}" Margin="0,12,0,0"/>
                                 </StackPanel>
                             </StackPanel>
                             <Border x:Name="PreparationSummary" Grid.Column="2" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource RuleBrush}" BorderThickness="1" Padding="24" MinHeight="398" VerticalAlignment="Top"><StackPanel>
@@ -196,14 +219,17 @@
                                 <Expander Header="Backup details" Foreground="{DynamicResource ChromeBrush}" Margin="0,20,0,0" Visibility="{Binding HasBackup, Converter={StaticResource VisibleWhenTrue}}"><StackPanel Margin="0,10,0,0"><TextBlock Text="{Binding BackupRoot}" Foreground="{DynamicResource MutedBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,8"/><Button Content="Open backup folder" Command="{Binding OpenBackupCommand}" Style="{StaticResource QuietLinkButton}" HorizontalAlignment="Left"/></StackPanel></Expander>
                             </StackPanel></Border>
                         </Grid>
-                        <TextBlock Text="{Binding Message}" Foreground="{DynamicResource ChromeBrush}" TextWrapping="Wrap" Margin="0,24,0,0" AutomationProperties.LiveSetting="Polite"/>
+                        <TextBlock Text="{Binding Message}" Foreground="{DynamicResource ChromeBrush}" TextWrapping="Wrap" Margin="0,18,0,0" AutomationProperties.LiveSetting="Polite"/>
+                        <Expander Header="Operation details" Foreground="{DynamicResource MutedBrush}" Margin="0,10,0,0" Visibility="{Binding HasMessageDetails, Converter={StaticResource VisibleWhenTrue}}"><TextBlock Text="{Binding MessageDetails}" TextWrapping="Wrap" FontSize="13" Margin="0,10,0,0"/></Expander>
                     </StackPanel>
                 </ScrollViewer>
             </Grid>
             <Border Grid.Row="3" BorderBrush="{DynamicResource RuleBrush}" BorderThickness="0,1,0,0" Background="{DynamicResource CanvasBrush}" Padding="26,18">
-                <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                    <Button Content="{Binding BackText}" Command="{Binding BackCommand}" Visibility="{Binding ShowBack, Converter={StaticResource VisibleWhenTrue}}" Style="{StaticResource QuietLinkButton}" HorizontalAlignment="Left" VerticalAlignment="Center"/>
-                    <Button Grid.Column="1" Content="{Binding PrimaryText}" Command="{Binding PrimaryCommand}" Style="{StaticResource DominantButton}"/>
+                <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                    <WrapPanel><Button Content="Skip setup" Command="{Binding SkipSetupCommand}" Style="{StaticResource QuietLinkButton}" Margin="0,0,16,12"/><Button Content="Change folders" Command="{Binding ChangeLocationsCommand}" Style="{StaticResource QuietLinkButton}" Margin="0,0,0,12"/></WrapPanel>
+                    <Button Grid.Column="1" Content="{Binding SecondaryContinueText}" Command="{Binding ContinueWithoutCleanupCommand}" Style="{StaticResource QuietButton}" HorizontalAlignment="Right" Margin="0,0,0,12" Visibility="{Binding ShowSecondaryContinue, Converter={StaticResource VisibleWhenTrue}}"/>
+                    <Button Grid.Row="1" Content="{Binding BackText}" Command="{Binding BackCommand}" Visibility="{Binding ShowBack, Converter={StaticResource VisibleWhenTrue}}" Style="{StaticResource QuietLinkButton}" HorizontalAlignment="Left" VerticalAlignment="Center"/>
+                    <Button Grid.Row="1" Grid.Column="1" Content="{Binding PrimaryText}" Command="{Binding PrimaryCommand}" Style="{StaticResource DominantButton}"/>
                 </Grid>
             </Border>
         </Grid>

@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.AccessControl;
 using ChromeBlood.Contracts.Serialization;
+using ChromeBlood.Contracts.Paths;
 using ChromeBlood.Core.Parity;
 using Microsoft.Win32.SafeHandles;
 
@@ -92,6 +93,43 @@ internal sealed class CleanupPolicy
     internal string LegacyCommit { get; }
     internal string Sha256 { get; }
     internal CleanupPolicyTarget[] Targets { get; }
+
+    internal CleanupPolicy WithoutPaths(IReadOnlyCollection<string>? keptPaths)
+    {
+        if (keptPaths is null || keptPaths.Count == 0) return this;
+        Func<string, bool> keep = CreateKeepFilter(keptPaths);
+        CleanupPolicyTarget[] targets = Targets.Where(target => !keep(target.RelativePath)).ToArray();
+        return new(Kind, LegacyCommit, Convert.ToHexStringLower(SHA256.HashData(ContractJson.SerializeUtf8(new { Sha256, targets }))), targets);
+    }
+
+    internal static Func<string, bool> CreateKeepFilter(IReadOnlyCollection<string>? paths)
+    {
+        if (paths is null || paths.Count == 0) return static _ => false;
+        HashSet<string> kept = paths.Select(ContractRelativePath.Normalize).ToHashSet(StringComparer.Ordinal);
+        HashSet<string> ancestors = new(StringComparer.Ordinal);
+        foreach (string path in kept)
+        {
+            string parent = path;
+            int separator;
+            while ((separator = parent.LastIndexOf('/')) >= 0)
+            {
+                parent = parent[..separator];
+                ancestors.Add(parent);
+            }
+        }
+        return relativePath =>
+        {
+            string candidate = ContractRelativePath.Normalize(relativePath);
+            if (kept.Contains(candidate) || ancestors.Contains(candidate)) return true;
+            int separator;
+            while ((separator = candidate.LastIndexOf('/')) >= 0)
+            {
+                candidate = candidate[..separator];
+                if (kept.Contains(candidate)) return true;
+            }
+            return false;
+        };
+    }
 
     internal static CleanupPolicy FromLegacyCorpus(LegacyParityCorpus corpus)
     {

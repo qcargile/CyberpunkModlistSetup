@@ -18,6 +18,7 @@ public sealed record CleanupPreparationPending(string Id, string GameRoot, strin
 public sealed record CleanupPreparationPreview(CleanupPreparationItem[] Items, CleanupPreparationPending[] Pending, string GameBackupRoot, string AppDataBackupRoot)
 {
     public VanillaScanResult? GameFiles { get; init; }
+    public string InspectionFailure { get; init; } = "";
 }
 public sealed record CleanupPreparationResult(string BackupRoot, bool Completed, bool Cancelled, string? Message = null)
 {
@@ -61,14 +62,16 @@ public sealed class CleanupPreparationService
         return new(corpus, stateRoot, appData, appDataBackup, disposableRoot);
     }
 
-    public Task<CleanupPreparationPreview> PreviewAsync(string gameRoot, CancellationToken cancellationToken)
-        => PreviewAsync(gameRoot, false, null, cancellationToken);
+    public Task<CleanupPreparationPreview> PreviewAsync(string gameRoot, CancellationToken cancellationToken,
+        string? gameBackupRoot = null, string? appDataBackupRoot = null)
+        => PreviewAsync(gameRoot, false, null, cancellationToken, gameBackupRoot, appDataBackupRoot);
 
     public Task<CleanupPreparationPreview> PreviewAsync(string gameRoot, bool verifyOfficialHashes,
-        IProgress<VanillaScanProgress>? progress, CancellationToken cancellationToken)
+        IProgress<VanillaScanProgress>? progress, CancellationToken cancellationToken,
+        string? gameBackupRoot = null, string? appDataBackupRoot = null)
         => Task.Run(async () =>
         {
-            CleanupPreparationPreview preview = Preview(gameRoot, cancellationToken);
+            CleanupPreparationPreview preview = Preview(gameRoot, cancellationToken, gameBackupRoot, appDataBackupRoot);
             VanillaScanResult scan = await new VanillaGameScanner().ScanAsync(gameRoot,
                 IndexedGameCleanup.ReadSteamManifest(gameRoot), verifyOfficialHashes, progress, cancellationToken).ConfigureAwait(false);
             if (!scan.ProfileMatch.Matched) return preview with { GameFiles = scan };
@@ -96,12 +99,14 @@ public sealed class CleanupPreparationService
     }
 
     public Task<CleanupPreparationResult> ExecuteAsync(string gameRoot, bool cleanGame, bool resetSettings, bool clearDiagnostics,
-        Action<string> progress, CancellationToken cancellationToken, IReadOnlyCollection<string>? changedOfficialPaths = null)
+        Action<string> progress, CancellationToken cancellationToken, IReadOnlyCollection<string>? changedOfficialPaths = null,
+        string? gameBackupRoot = null, string? appDataBackupRoot = null, IReadOnlyCollection<string>? keptGamePaths = null)
         => Task.Run(async () =>
         {
             string game = Normalize(gameRoot);
-            string gameBackup = GameBackup(game);
-            string backup = cleanGame ? gameBackup : _appDataBackup;
+            string gameBackup = gameBackupRoot is null ? GameBackup(game) : ResolveBackup(game, gameBackupRoot, game, cancellationToken);
+            string appDataBackup = appDataBackupRoot is null ? _appDataBackup : ResolveBackup(_appData, appDataBackupRoot, game, cancellationToken);
+            string backup = cleanGame ? gameBackup : appDataBackup;
             VanillaScanResult? verifiedFiles = null;
             try
             {
@@ -111,7 +116,7 @@ public sealed class CleanupPreparationService
                 RequireClosedWriters();
                 using SecureCacheRoot heldGame = new(game, new WindowsSecureFileApi(), false);
                 UndoJournal journal = Journal();
-                if (Pending(journal, game, gameBackup).Length > 0)
+                if (Pending(journal, game).Length > 0)
                     throw new CleanupAuthorizationException("An interrupted preparation needs to be resumed before starting another cleanup.");
                 if (cleanGame)
                 {
@@ -122,21 +127,28 @@ public sealed class CleanupPreparationService
                     VanillaScanResult scan = await new VanillaGameScanner().ScanAsync(game,
                         IndexedGameCleanup.ReadSteamManifest(game), true, reporting, cancellationToken).ConfigureAwait(false);
                     verifiedFiles = scan;
-                    CleanupPolicy policy = scan.ProfileMatch.Matched ? IndexedGameCleanup.CreatePolicy(scan) : CleanupPolicy.ForPreparation(_corpus);
+                    CleanupPolicy policy = (scan.ProfileMatch.Matched ? IndexedGameCleanup.CreatePolicy(scan) : CleanupPolicy.ForPreparation(_corpus)).WithoutPaths(keptGamePaths);
                     if (scan.ProfileMatch.Matched)
                     {
                         RequireMatchingReference(game);
                         VanillaGameIndex index = VanillaGameIndex.LoadEmbedded();
+                        Func<string, bool> keep = CleanupPolicy.CreateKeepFilter(keptGamePaths);
                         string[] originals = scan.Entries.Where(entry => entry.Status == VanillaEntryStatus.Changed
                                 && !entry.IsDirectory && entry.ExpectedSha1 is not null).Select(entry => entry.RelativePath)
-                            .Concat(changedOfficialPaths ?? []).Where(path => index.Files.ContainsKey(path)
+                            .Concat(changedOfficialPaths ?? []).Where(path => !keep(path) && index.Files.ContainsKey(path)
                                 && File.Exists(CleanupPlanner.ResolveUnder(game, path)))
                             .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
                         await OfficialFileBackup.PreserveAsync(game, gameBackup, originals, progress, cancellationToken).ConfigureAwait(false);
                     }
-                    CleanupPlanner planner = new();
+                    CleanupPlanner planner = Planner();
                     CleanupPlan plan = planner.Plan(game, gameBackup, policy, cancellationToken);
-                    string[] selected = SelectAvailable(plan, null);
+                    foreach (VanillaScanEntry observed in scan.Entries.Where(entry => entry.ActualSha256 is not null))
+                    {
+                        CleanupEntry? planned = plan.Entries.FirstOrDefault(entry => entry.RelativePath.Equals(observed.RelativePath, StringComparison.OrdinalIgnoreCase));
+                        if (planned is not null && planned.Sha256 != observed.ActualSha256)
+                            throw new CleanupAuthorizationException("A DLSS file changed during the check. Check again before cleanup; the file was kept in place.");
+                    }
+                    string[] selected = SelectAvailable(plan, null, keptGamePaths);
                     if (selected.Length > 0)
                     {
                         RequireClosedWriters();
@@ -155,20 +167,20 @@ public sealed class CleanupPreparationService
                 {
                     RequireClosedWriters();
                     using SecureCacheRoot heldAppData = new(_appData, new WindowsSecureFileApi(), false);
-                    using BackupLease lease = new(_appDataBackup);
+                    using BackupLease lease = new(appDataBackup);
                     CleanupPolicy policy = CleanupPolicy.CyberpunkAppData(resetSettings, clearDiagnostics);
-                    CleanupPlanner planner = new();
-                    CleanupPlan plan = planner.Plan(_appData, _appDataBackup, policy, cancellationToken);
+                    CleanupPlanner planner = Planner();
+                    CleanupPlan plan = planner.Plan(_appData, appDataBackup, policy, cancellationToken);
                     string[] requested = policy.Targets.Where(value => value.RelativePath == "REDEngine" ? clearDiagnostics : resetSettings).Select(value => value.RelativePath).ToArray();
                     string[] selected = SelectAvailable(plan, requested);
                     if (selected.Length > 0)
                     {
                         RequireClosedWriters();
                         AuthorizedCleanupPlan authorized = planner.AuthorizeSelected(plan, selected, policy, cancellationToken);
-                        progress("Moving selected local settings and diagnostics to " + _appDataBackup);
+                        progress("Moving selected local settings and diagnostics to " + appDataBackup);
                         QuarantineResult result = await new QuarantineTransaction().ExecuteRecordedAsync(authorized, NewId("appdata"), journal, cancellationToken).ConfigureAwait(false);
                         if (result.State != QuarantineTransactionState.Committed)
-                            return Failed(result, _appDataBackup, cancellationToken);
+                            return Failed(result, appDataBackup, cancellationToken);
                     }
                 }
                 progress("Preparation cleanup completed. Backups are retained.");
@@ -186,10 +198,9 @@ public sealed class CleanupPreparationService
             string game = Normalize(gameRoot);
             RequireGame(game);
             UndoJournal journal = Journal();
-            CleanupPreparationPending pending = Pending(journal, game, GameBackup(game)).SingleOrDefault(value => value.Id == transactionId)
+            CleanupPreparationPending pending = Pending(journal, game).SingleOrDefault(value => value.Id == transactionId)
                 ?? throw new CleanupAuthorizationException("The selected preparation transaction is not pending for this game or local settings folder.");
-            using BackupLease lease = new(pending.BackupRoot);
-            if (CleanupPlanner.PathEquals(pending.GameRoot, game)) RequireNoDeployment(game);
+            if (pending.GameRoot.Length > 0 && CleanupPlanner.PathEquals(pending.GameRoot, game)) RequireNoDeployment(game);
             UndoJournalEntry reservation = journal.Entries.Single(value => value.QuarantineId == transactionId);
             cancellationToken.ThrowIfCancellationRequested();
             if (!File.Exists(reservation.WalPath) && !File.Exists(reservation.ManifestPath))
@@ -211,6 +222,12 @@ public sealed class CleanupPreparationService
             QuarantineRecoveryState recovery = QuarantineTransaction.ReadRecovery(reservation.QuarantineRoot, transactionId);
             string evidencePath = recovery.HasCommittedManifest ? reservation.ManifestPath : reservation.WalPath;
             QuarantineManifest manifest = ContractJson.Deserialize<QuarantineManifest>(File.ReadAllBytes(evidencePath));
+            if (!CleanupPlanner.PathEquals(manifest.GameRoot, game) && !CleanupPlanner.PathEquals(manifest.GameRoot, _appData)
+                || !CleanupPlanner.PathEquals(manifest.GameRoot, pending.GameRoot)
+                || !CleanupPlanner.PathEquals(manifest.QuarantineRoot, pending.BackupRoot))
+                throw new CleanupManifestException("The saved cleanup belongs to a different source or backup folder. Keep its backup.");
+            _ = ResolveBackup(manifest.GameRoot, pending.BackupRoot, game, cancellationToken);
+            using BackupLease lease = new(pending.BackupRoot);
             using SecureCacheRoot heldSource = new(pending.GameRoot, new WindowsSecureFileApi(), false);
             ValidateRecoveryRoots(manifest);
             try
@@ -227,13 +244,25 @@ public sealed class CleanupPreparationService
             }
         }, cancellationToken);
 
-    private CleanupPreparationPreview Preview(string gameRoot, CancellationToken cancellationToken)
+    private CleanupPreparationPreview Preview(string gameRoot, CancellationToken cancellationToken, string? gameBackupRoot, string? appDataBackupRoot)
     {
         string game = Normalize(gameRoot);
         RequireGame(game);
-        string gameBackup = GameBackup(game);
+        string gameBackup = gameBackupRoot ?? GameBackup(game);
+        string appDataBackup = appDataBackupRoot ?? _appDataBackup;
         string journalPath = Path.Combine(_stateRoot, "preparation-journal.json");
-        CleanupPreparationPending[] pending = File.Exists(journalPath) ? Pending(Journal(), game, gameBackup) : [];
+        CleanupPreparationPending[] pending = [];
+        string inspectionFailure = "";
+        try { if (File.Exists(journalPath)) pending = Pending(Journal(), game); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException)
+        { inspectionFailure = "The saved cleanup could not be read. Keep all backup folders and preparation-journal.json. " + exception.Message; }
+        try
+        {
+            if (gameBackupRoot is not null) gameBackup = ResolveBackup(game, gameBackupRoot, game, cancellationToken);
+            if (appDataBackupRoot is not null) appDataBackup = ResolveBackup(_appData, appDataBackupRoot, game, cancellationToken);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException or System.ComponentModel.Win32Exception)
+        { inspectionFailure = string.Join("\n", new[] { inspectionFailure, exception.Message }.Where(value => value.Length > 0)); }
         List<CleanupPreparationItem> items = [];
         foreach (CleanupPolicyTarget target in CleanupPolicy.ForPreparation(_corpus).Targets)
         {
@@ -272,7 +301,7 @@ public sealed class CleanupPreparationService
         }
         foreach (CleanupPolicyTarget target in CleanupPolicy.CyberpunkAppData().Targets)
             AddPreview(items, _appData, target.RelativePath, target.RelativePath == "REDEngine" ? "Diagnostics" : "Settings", target.Reason);
-        return new([.. items], pending, gameBackup, _appDataBackup);
+        return new([.. items], pending, gameBackup, appDataBackup) { InspectionFailure = inspectionFailure };
     }
 
     private static void AddPreview(List<CleanupPreparationItem> items, string root, string relative, string scope, string reason)
@@ -301,25 +330,23 @@ public sealed class CleanupPreparationService
 
     private UndoJournal Journal() => new(Path.Combine(_stateRoot, "preparation-journal.json"));
 
-    private CleanupPreparationPending[] Pending(UndoJournal journal, string game, string gameBackup)
+    private CleanupPreparationPending[] Pending(UndoJournal journal, string game)
     {
         List<CleanupPreparationPending> pending = [];
         foreach (UndoJournalEntry entry in journal.Entries.Where(value => value.State is not UndoJournalState.Available and not UndoJournalState.Restored))
         {
-            if (!CleanupPlanner.PathEquals(entry.QuarantineRoot, gameBackup) && !CleanupPlanner.PathEquals(entry.QuarantineRoot, _appDataBackup)) continue;
-            string target = CleanupPlanner.PathEquals(entry.QuarantineRoot, gameBackup) ? game : _appData;
             string transactionRoot = Path.Combine(entry.QuarantineRoot, entry.QuarantineId);
             if (!CleanupPlanner.PathEquals(entry.ManifestPath, Path.Combine(transactionRoot, "quarantine.json"))
                 || !CleanupPlanner.PathEquals(entry.WalPath, Path.Combine(transactionRoot, "transaction.wal.json")))
                 throw new CleanupManifestException("The preparation journal does not point to its exact transaction files.");
             if (!File.Exists(entry.WalPath) && !File.Exists(entry.ManifestPath))
             {
-                pending.Add(new(entry.QuarantineId, target, entry.QuarantineRoot, "Preparation journal needs attention before any files can move", [])
+                pending.Add(new(entry.QuarantineId, "", entry.QuarantineRoot, "Preparation journal needs attention before any files can move", [])
                 { FailureDetail = "The staged recovery journal is missing. Retry checks whether preparation stopped before any files moved. Existing backup contents are retained." });
                 continue;
             }
             QuarantineRecoveryState recovery = QuarantineTransaction.ReadRecovery(entry.QuarantineRoot, entry.QuarantineId);
-            if (!CleanupPlanner.PathEquals(recovery.GameRoot, target)) throw new CleanupManifestException("A preparation journal belongs to a different physical target.");
+            if (!CleanupPlanner.PathEquals(recovery.GameRoot, game) && !CleanupPlanner.PathEquals(recovery.GameRoot, _appData)) continue;
 
             pending.Add(new(entry.QuarantineId, recovery.GameRoot, entry.QuarantineRoot, recovery.State.ToString(), recovery.Entries.Select(value => value.RelativePath).ToArray())
             {
@@ -330,9 +357,11 @@ public sealed class CleanupPreparationService
         return [.. pending];
     }
 
-    private static string[] SelectAvailable(CleanupPlan plan, string[]? requested)
+    private static string[] SelectAvailable(CleanupPlan plan, string[]? requested, IReadOnlyCollection<string>? keptPaths = null)
     {
-        CleanupTarget[] targets = plan.Targets.Where(value => requested is null || requested.Contains(value.RelativePath, StringComparer.OrdinalIgnoreCase)).ToArray();
+        Func<string, bool> keep = CleanupPolicy.CreateKeepFilter(keptPaths);
+        CleanupTarget[] targets = plan.Targets.Where(value => (requested is null || requested.Contains(value.RelativePath, StringComparer.OrdinalIgnoreCase))
+            && !keep(value.RelativePath)).ToArray();
         CleanupTarget? unavailable = targets.FirstOrDefault(value => value.Status is not CleanupEntryStatus.Available and not CleanupEntryStatus.Missing);
         if (unavailable is not null) throw new CleanupPlanException("Preparation cannot access " + unavailable.RelativePath + ": " + unavailable.Status + ". Close the game and mod tools, check access, then retry.");
         return targets.Where(value => value.Status == CleanupEntryStatus.Available).Select(value => value.RelativePath).ToArray();
@@ -449,6 +478,45 @@ public sealed class CleanupPreparationService
             throw new CleanupAuthorizationException("The selected game is outside the owned disposable test root.");
         return path;
     }
+
+    private CleanupPlanner Planner() => _disposableRoot is null ? new() : CleanupPlanner.ForDisposableTests(_disposableRoot);
+
+    private string ResolveBackup(string source, string requested, string game, CancellationToken cancellationToken)
+    {
+        if (!Path.IsPathFullyQualified(requested) || requested.StartsWith(@"\\", StringComparison.Ordinal))
+            throw new CleanupPlanException("Choose a local backup folder on the same drive as its source.");
+        string backup = Normalize(requested);
+        if (CleanupPlanner.SameOrChild(backup, game) || CleanupPlanner.SameOrChild(game, backup)
+            || CleanupPlanner.SameOrChild(backup, _appData) || CleanupPlanner.SameOrChild(_appData, backup)
+            || CleanupPlanner.TouchesProtectedSystemRoot(backup) || CleanupPlanner.PathEquals(backup, Path.GetPathRoot(backup)!))
+            throw new CleanupPlanException("Choose a backup folder outside the game, Local AppData and Windows system folders.");
+        string existing = backup;
+        while (!Directory.Exists(existing))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                FileAttributes attributes = File.GetAttributes(existing);
+                if ((attributes & FileAttributes.ReparsePoint) != 0)
+                    throw new CleanupPlanException("Choose a backup folder without symbolic links or redirected parent folders.");
+                if ((attributes & FileAttributes.Directory) == 0)
+                    throw new CleanupPlanException("A file occupies the backup path. Choose another folder.");
+            }
+            catch (FileNotFoundException) { }
+            catch (DirectoryNotFoundException) { }
+            existing = Path.GetDirectoryName(existing) ?? throw new CleanupPlanException("The backup drive is unavailable. Choose another folder.");
+        }
+        WindowsCleanupProbe probe = new();
+        CleanupRootObservation original = probe.ObserveRoot(source, false, cancellationToken);
+        CleanupRootObservation destination = probe.ObserveRoot(existing, false, cancellationToken);
+        if (original.IsReparse || original.HasReparseAncestor || destination.IsReparse || destination.HasReparseAncestor
+            || !CleanupPlanner.PathEquals(original.PhysicalPath, source) || !CleanupPlanner.PathEquals(destination.PhysicalPath, existing))
+            throw new CleanupPlanException("Choose a backup folder without symbolic links or redirected parent folders.");
+        if (original.FileIdentity.Split(':', 2)[0] != destination.FileIdentity.Split(':', 2)[0])
+            throw new CleanupManualRequiredException("Choose a backup folder on the source drive, or back up these files manually before skipping cleanup.");
+        return backup;
+    }
+
     private static string GameBackup(string game)
     {
         string sibling = game + ".ChromeBlood-Backups";

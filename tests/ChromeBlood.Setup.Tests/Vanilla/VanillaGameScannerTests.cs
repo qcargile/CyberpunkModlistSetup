@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using ChromeBlood.Core.Cleanup;
 using ChromeBlood.Core.Preparation;
+using ChromeBlood.Core.Parity;
 using ChromeBlood.Core.Vanilla;
 using ChromeBlood.Testing;
 
@@ -14,6 +15,59 @@ public sealed class VanillaGameScannerTests
     public TestContext TestContext { get; set; } = null!;
 
     private const string Manifest = "\"AppState\" { \"appid\" \"1091500\" \"buildid\" \"26161058\" \"StateFlags\" \"4\" \"UserConfig\" { \"language\" \"english\" \"BetaKey\" \"public\" } \"InstalledDepots\" { \"1091501\" { \"manifest\" \"3524634124112875626\" } \"2060310\" { \"manifest\" \"4793018690565322422\" } \"2138330\" { \"manifest\" \"5565496786254603194\" } } }";
+
+    [TestMethod]
+    public Task CandidateChangedAfterClassificationIsKeptUntilAnotherCheck()
+        => RejectChangedCandidate(null);
+
+    [TestMethod]
+    [TestCategory("GameIndexLive")]
+    public Task NewlyRecognizedBackupCannotBeMovedByAnOlderClassification()
+    {
+        string? root = Environment.GetEnvironmentVariable("CHROMEBLOOD_VERIFY_STEAM25_ROOT");
+        if (string.IsNullOrWhiteSpace(root)) Assert.Inconclusive("Set CHROMEBLOOD_VERIFY_STEAM25_ROOT to test a copied NVIDIA backup.");
+        return RejectChangedCandidate(Path.Combine(root!, "bin", "x64", "nvngx_dlss.dll.dlsss"));
+    }
+
+    private static async Task RejectChangedCandidate(string? replacement)
+    {
+        using TemporaryDirectory temporary = new();
+        string game = Path.Combine(temporary.Path, "steamapps", "common", "Cyberpunk 2077");
+        Directory.CreateDirectory(Path.Combine(game, "bin", "x64"));
+        File.WriteAllText(Path.Combine(game, "bin", "x64", "Cyberpunk2077.exe"), "test executable");
+        File.WriteAllText(Path.Combine(temporary.Path, "steamapps", "appmanifest_1091500.acf"),
+            Manifest.Replace("\"appid\" \"1091500\"", "\"appid\" \"1091500\" \"installdir\" \"Cyberpunk 2077\"", StringComparison.Ordinal));
+        string candidate = Path.Combine(game, "bin", "x64", "nvngx_dlss.dll.dlsss");
+        File.WriteAllText(candidate, "unrecognized backup");
+        string appData = Directory.CreateDirectory(Path.Combine(temporary.Path, "appdata")).FullName;
+        string backup = Path.Combine(temporary.Path, "backup");
+        CleanupPreparationService service = CleanupPreparationService.ForDisposableTests(temporary.Path, LegacyParityCorpus.LoadEmbedded(),
+            Path.Combine(temporary.Path, "state"), appData, Path.Combine(temporary.Path, "settings-backup"));
+        bool changed = false;
+        await Assert.ThrowsExactlyAsync<CleanupAuthorizationException>(() => service.ExecuteAsync(game, true, false, false, message =>
+        {
+            if (!changed && message.StartsWith("Verifying official game files:", StringComparison.Ordinal)
+                && message.EndsWith("bytes read. ", StringComparison.Ordinal))
+            {
+                if (replacement is null) File.WriteAllText(candidate, "changed backup");
+                else File.Copy(replacement, candidate, true);
+                changed = true;
+            }
+        }, CancellationToken.None, gameBackupRoot: backup));
+        Assert.IsTrue(changed);
+        Assert.IsTrue(File.Exists(candidate));
+        Assert.IsEmpty(Directory.GetFiles(temporary.Path, "quarantine.json", SearchOption.AllDirectories));
+        if (replacement is not null)
+        {
+            using FileStream expected = File.OpenRead(replacement);
+            using FileStream actual = File.OpenRead(candidate);
+            CollectionAssert.AreEqual(SHA256.HashData(expected), SHA256.HashData(actual));
+            VanillaScanResult checkedAgain = await new VanillaGameScanner().ScanAsync(game,
+                File.ReadAllText(Path.Combine(temporary.Path, "steamapps", "appmanifest_1091500.acf")));
+            Assert.AreEqual(VanillaEntryStatus.VendorBackup, Entry(checkedAgain, @"bin\x64\nvngx_dlss.dll.dlsss").Status);
+        }
+        else Assert.AreEqual("changed backup", File.ReadAllText(candidate));
+    }
 
     [TestMethod]
     public void EmbeddedReferenceHasCompletePinnedSteamDepotInventory()

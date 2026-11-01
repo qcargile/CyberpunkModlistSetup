@@ -9,6 +9,22 @@ namespace ChromeBlood.Setup.Tests.Cleanup;
 public sealed class IndexedGameCleanupTests
 {
     [TestMethod]
+    public async Task UnreadableSavedJournalKeepsTheGameFindingsAndPreservesTheRecord()
+    {
+        using TemporaryDirectory temporary = new();
+        (CleanupPreparationService service, string game, _) = Service(temporary.Path);
+        File.WriteAllText(Path.Combine(game, "extra.dll"), "added file");
+        string state = Directory.CreateDirectory(Path.Combine(temporary.Path, "state")).FullName;
+        string journal = Path.Combine(state, "preparation-journal.json");
+        File.WriteAllText(journal, "{broken journal");
+        CleanupPreparationPreview preview = await service.PreviewAsync(game, CancellationToken.None);
+        Assert.IsFalse(string.IsNullOrWhiteSpace(preview.InspectionFailure));
+        Assert.IsTrue(preview.Items.Any(item => item.RelativePath == "extra.dll"));
+        Assert.AreEqual("{broken journal", File.ReadAllText(journal));
+        Assert.AreEqual("added file", File.ReadAllText(Path.Combine(game, "extra.dll")));
+    }
+
+    [TestMethod]
     public async Task IndexedCleanupPreservesOfficialFilesAndMovesUnknownExtrasWithRecoverableEvidence()
     {
         using TemporaryDirectory temporary = new();

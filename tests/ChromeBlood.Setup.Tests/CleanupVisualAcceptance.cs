@@ -40,6 +40,8 @@ public sealed class CleanupVisualAcceptance
                 new("wabbajack", "Wabbajack", "Ready", CheckState.Ready, true)],
             ReadyForHandoff = true,
             CleanupReferenceDetail = "Steam 2.5 English public build 26161058 with REDmod and Phantom Liberty matches the reference.",
+            GameBackupRoot = @"D:\Games\Cyberpunk 2077.ChromeBlood-Backups",
+            SettingsBackupRoot = @"C:\ChromeBlood-Backups\LocalAppData",
             PlannedBackupRoot = @"D:\Games\Cyberpunk 2077.ChromeBlood-Backups"
         };
         PreparationSnapshot dirty = basis with
@@ -66,16 +68,24 @@ public sealed class CleanupVisualAcceptance
         Capture("clean", basis with { GameFileHashesChecked = true, GameFileVerifiedAt = DateTimeOffset.UtcNow }, false, 1280, 800);
         Capture("not-verified", basis, false, 1280, 800);
         Capture("repair-needed", basis with { ChangedOfficialFiles = 1, MissingOfficialFiles = 2, ReadyForHandoff = false }, false, 1280, 800);
-        Capture("custom-dlss", basis with { GameFileHashesChecked = true, PreservedDlssFiles = 6 }, false, 1280, 800);
+        Capture("intentional-dlss", basis with
+        {
+            ChangedOfficialFiles = 1,
+            CleanupItems = [new(@"bin\x64\nvngx_dlss.dll", "Different from the store version", "Changed official")]
+        }, false, 640, 700, fileChoices: true);
         Capture("cleanup-compact", dirty, false, 760, 800);
         Capture("cleanup-recovery", dirty with { PendingCleanup = true, ReadyForHandoff = false, RecoveryDetail = "The previous cleanup was interrupted. Continue with its recorded backup." }, false, 1280, 800);
         PreparationSnapshot failed = dirty with
         {
             PendingCleanup = true, ReadyForHandoff = false,
+            ManualCleanupGuidance = "Close the game and mod tools. Keep the saved backup and its journal. Move only identified extra mod files to a backup outside the game. Do not delete official files; repair them through your game store. Settings and crash reports can be left alone. You can continue with other preparation while cleanup remains unfinished.",
+            ManualCleanupItems = [new(@"D:\Games\Cyberpunk 2077\archive\pc\mod", "Added mod files: back up outside the game, then remove from the game folder.")],
+            RetainedBackupRoot = @"D:\Games\Cyberpunk 2077.ChromeBlood-Backups",
             CleanupFailure = "Could not preserve CleanSlate_Quarantine\\2026-10-28_004428\\archive\\pc\\mod\\example.archive. The file is being used by another process. Windows error 32.\nClose the application using this file, then retry cleanup. Saved files are retained."
         };
         Capture("cleanup-failed", failed, false, 1280, 800);
         Capture("cleanup-failed-narrow", failed, false, 640, 700);
+        Capture("cleanup-manual-continue", failed with { CleanupDeferred = true, ReadyForHandoff = true }, false, 1280, 800);
         Capture("game-selection", basis, false, 1280, 800, "game");
         Capture("wabbajack-handoff", basis, false, 1280, 800, "wabbajack");
         VerifyClose(false);
@@ -141,10 +151,11 @@ public sealed class CleanupVisualAcceptance
             }
         }
 
-        void Capture(string name, PreparationSnapshot snapshot, bool review, int width, int height, string page = "prepare")
+        void Capture(string name, PreparationSnapshot snapshot, bool review, int width, int height, string page = "prepare", bool fileChoices = false)
         {
             PreparationViewModel model = new(new PreparationService());
             model.UpdateSnapshot(snapshot);
+            model.ShowFileChoices = fileChoices;
             model.PrepareCommand.Execute(null);
             if (page == "game") model.GameCommand.Execute(null);
             if (page == "wabbajack") model.WabbajackCommand.Execute(null);

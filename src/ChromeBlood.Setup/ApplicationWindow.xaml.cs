@@ -15,6 +15,11 @@ public partial class ApplicationWindow : Window
     public ApplicationWindow()
     {
         InitializeComponent();
+        Rect workArea = SystemParameters.WorkArea;
+        MinWidth = Math.Min(MinWidth, workArea.Width);
+        MinHeight = Math.Min(MinHeight, workArea.Height);
+        Width = Math.Min(Width, workArea.Width);
+        Height = Math.Min(Height, workArea.Height);
         Closing += DrainBeforeClose;
     }
 

@@ -19,6 +19,7 @@ public sealed record PackageCacheEntry(
 public sealed class PackageCache : IDisposable
 {
     private const int LockRetryMilliseconds = 25;
+    private const int LockWaitMilliseconds = 10000;
     private readonly SecureCacheRoot _root;
     private readonly PackageDownloader _downloader;
     private readonly IAuthenticodeVerifier _authenticode;
@@ -428,6 +429,7 @@ public sealed class PackageCache : IDisposable
 
     private async Task<SafeFileHandle> AcquireLockAsync(string name, CancellationToken cancellationToken)
     {
+        long started = Environment.TickCount64;
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -437,6 +439,9 @@ public sealed class PackageCache : IDisposable
             }
             catch (SecureFileOpenException exception) when (exception.NativeError is 32 or 33)
             {
+                if (Environment.TickCount64 - started >= LockWaitMilliseconds)
+                    throw new PackageAcquisitionException("Another process is keeping the package cache busy: " + Path.Combine(_root.Path, name)
+                        + ". Close other Setup windows or wait for the active process to finish, then retry. Other preparation can continue.", exception);
                 await Task.Delay(LockRetryMilliseconds, cancellationToken).ConfigureAwait(false);
             }
             catch (IOException exception)

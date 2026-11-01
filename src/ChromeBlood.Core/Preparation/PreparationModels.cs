@@ -6,19 +6,28 @@ public sealed record PreparationCheck(string Id, string Title, string Detail, Ch
 
 public sealed record GameCandidate(string Root, string Store, string Version, string BuildId);
 
-public sealed record CleanupItemLabel(string Path, string Reason, string Scope = "Game");
+public sealed record CleanupItemLabel(string Path, string Reason, string Scope = "Game")
+{
+    public bool IsKept { get; init; }
+}
 
 public sealed record PreparationSnapshot
 {
     public IReadOnlyList<GameCandidate> GameCandidates { get; init; } = [];
     public string? SelectedGameRoot { get; init; }
     public string? GameRootIdentity { get; init; }
+    public string? GameBackupRoot { get; init; }
+    public string? SettingsBackupRoot { get; init; }
+    public IReadOnlyList<string> KeptGamePaths { get; init; } = [];
     public string WabbajackDirectory { get; init; } = "";
     public IReadOnlyList<PreparationCheck> Checks { get; init; } = [];
     public IReadOnlyList<CleanupItemLabel> CleanupItems { get; init; } = [];
     public bool PendingCleanup { get; init; }
     public string CleanupFailure { get; init; } = "";
     public bool CleanupIssue { get; init; }
+    public bool CleanupDeferred { get; init; }
+    public string ManualCleanupGuidance { get; init; } = "";
+    public IReadOnlyList<CleanupItemLabel> ManualCleanupItems { get; init; } = [];
     public string CleanupReferenceDetail { get; init; } = "";
     public bool GameFileHashesChecked { get; init; }
     public bool GameFileReferenceMatched { get; init; }
@@ -30,6 +39,7 @@ public sealed record PreparationSnapshot
     public int PreservedDlssFiles { get; init; }
     public long CleanupBytes { get; init; }
     public string PlannedBackupRoot { get; init; } = "";
+    public string? RetainedBackupRoot { get; init; }
     public string? RecoveryDetail { get; init; }
     public bool ReadyForHandoff { get; init; }
 }

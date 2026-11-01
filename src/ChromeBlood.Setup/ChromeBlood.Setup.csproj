@@ -9,6 +9,7 @@
     <ApplicationIcon>../ChromeBlood.Presentation/Assets/app-icon.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
+    <Content Include="../../LICENSE;../../THIRD-PARTY-NOTICES.md" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
     <InternalsVisibleTo Include="ChromeBlood.Setup.Tests" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" GeneratePathProperty="true" />
     <Content Include="$(PkgCommunityToolkit_Mvvm)/License.md" Link="licenses/CommunityToolkit.Mvvm-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
@@ -16,4 +17,19 @@
     <ProjectReference Include="../ChromeBlood.Core/ChromeBlood.Core.csproj" />
     <ProjectReference Include="../ChromeBlood.Presentation/ChromeBlood.Presentation.csproj" />
   </ItemGroup>
+  <Target Name="IncludeRuntimeNotices" BeforeTargets="ComputeFilesToPublish" DependsOnTargets="ResolveFrameworkReferences" Condition="'$(SelfContained)' == 'true'">
+    <ItemGroup>
+      <_SetupRuntimePack Include="@(ResolvedRuntimePack)" Condition="'%(ResolvedRuntimePack.FrameworkName)' == 'Microsoft.NETCore.App' or '%(ResolvedRuntimePack.FrameworkName)' == 'Microsoft.WindowsDesktop.App'" />
+      <_SetupRuntimeNotice Include="%(_SetupRuntimePack.PackageDirectory)/LICENSE.TXT" Condition="Exists('%(_SetupRuntimePack.PackageDirectory)/LICENSE.TXT')">
+        <PackageId>%(_SetupRuntimePack.NuGetPackageId)</PackageId>
+      </_SetupRuntimeNotice>
+      <_SetupRuntimeNotice Include="%(_SetupRuntimePack.PackageDirectory)/LICENSE" Condition="Exists('%(_SetupRuntimePack.PackageDirectory)/LICENSE')">
+        <PackageId>%(_SetupRuntimePack.NuGetPackageId)</PackageId>
+      </_SetupRuntimeNotice>
+      <_SetupRuntimeNotice Include="%(_SetupRuntimePack.PackageDirectory)/THIRD-PARTY-NOTICES.TXT" Condition="Exists('%(_SetupRuntimePack.PackageDirectory)/THIRD-PARTY-NOTICES.TXT')">
+        <PackageId>%(_SetupRuntimePack.NuGetPackageId)</PackageId>
+      </_SetupRuntimeNotice>
+      <ResolvedFileToPublish Include="@(_SetupRuntimeNotice)" RelativePath="licenses/%(_SetupRuntimeNotice.PackageId)-%(_SetupRuntimeNotice.Filename)%(_SetupRuntimeNotice.Extension)" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    </ItemGroup>
+  </Target>
 </Project>

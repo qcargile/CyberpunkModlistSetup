@@ -85,20 +85,22 @@ public static class PreparationPackages
     }
 
     public static async Task<bool> InstallPrerequisitesAsync(PreparationOptions options, IProgress<PreparationProgress>? progress,
-        CancellationToken cancellationToken = default, Action<bool>? rebootChanged = null)
+        CancellationToken cancellationToken = default, Action<bool>? rebootChanged = null, Action<string>? reportFailure = null)
     {
         List<string> verbs = [];
         if (options.InstallRuntimes)
         {
-            if (!VcRuntimePresence.IsInstalled("x64")) verbs.Add("vcredist-x64");
-            if (!VcRuntimePresence.IsInstalled("x86")) verbs.Add("vcredist-x86");
+            verbs.Add("vcredist-x64");
+            verbs.Add("vcredist-x86");
         }
-        if (options.EnableLongPaths && !PreparationMachine.LongPathsEnabled) verbs.Add("longpaths");
-        if (options.LegacyDirectX && new WindowsDirectXRuntimePresenceProbe().Observe().Status != DirectXRuntimeStatus.Satisfied) verbs.Add("directx");
+        if (options.EnableLongPaths) verbs.Add("longpaths");
+        if (options.LegacyDirectX) verbs.Add("directx");
         bool reboot = false;
-        foreach (string verb in verbs)
+        await RunPrerequisiteActionsAsync(verbs, async verb =>
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            if (verb.StartsWith("vcredist-", StringComparison.Ordinal) && VcRuntimePresence.IsInstalled(verb[9..])
+                || verb == "longpaths" && PreparationMachine.LongPathsEnabled
+                || verb == "directx" && new WindowsDirectXRuntimePresenceProbe().Observe().Status == DirectXRuntimeStatus.Satisfied) return;
             using SecureCacheRoot intents = new(StateRoot);
             using var actionLock = intents.OpenLock(verb + ".lock");
             RequirePreviousProcessFinished(intents, verb);
@@ -132,8 +134,31 @@ public static class PreparationPackages
             SaveIntent(intent with { State = "completed", ExitCode = code });
             if (code is not (0 or 1638 or 3010)) throw new IOException($"The {verb} step failed (Windows result {code}). Check preparation and retry.");
             cancellationToken.ThrowIfCancellationRequested();
-        }
+        }, cancellationToken, reportFailure).ConfigureAwait(false);
         return reboot;
+    }
+
+    internal static async Task RunPrerequisiteActionsAsync(IEnumerable<string> verbs, Func<string, Task> execute,
+        CancellationToken cancellationToken, Action<string>? reportFailure)
+    {
+        foreach (string verb in verbs)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try { await execute(verb).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception exception) when (reportFailure is not null && exception is not OutOfMemoryException)
+            {
+                string recovery = verb switch
+                {
+                    "vcredist-x64" => "Install Microsoft's latest Visual C++ x64 redistributable manually, then check again.",
+                    "vcredist-x86" => "Install Microsoft's latest Visual C++ x86 redistributable manually, then check again.",
+                    "longpaths" => "Enable Win32 long paths in Windows Group Policy, or set LongPathsEnabled to 1 under HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem as an administrator, then check again.",
+                    "directx" => "Install Microsoft's DirectX End-User Runtimes (June 2010) manually if needed. This optional step can be skipped.",
+                    _ => "Complete this step manually, then check again."
+                };
+                reportFailure(verb + ": " + exception.Message + " " + recovery);
+            }
+        }
     }
 
     public static Task<int> RunPrerequisiteAsync(string verb, CancellationToken cancellationToken = default)
@@ -204,7 +229,7 @@ public static class PreparationPackages
         finally { foreach (Process process in candidates) process.Dispose(); }
     }
 
-    private static async Task<SecureFileLease> OpenLaunchPackageAsync(SecureCacheRoot root, PackageCacheEntry package,
+    internal static async Task<SecureFileLease> OpenLaunchPackageAsync(SecureCacheRoot root, PackageCacheEntry package,
         DownloadRequest request, string verb, CancellationToken token)
     {
         string name = package.CacheId + "-" + verb + ".exe";
@@ -215,6 +240,12 @@ public static class PreparationPackages
             {
                 await VerifyLaunchPackageAsync(existing, package, request, token).ConfigureAwait(false);
                 return existing;
+            }
+            catch (IOException exception)
+            {
+                existing.Dispose();
+                throw new IOException("The staged Microsoft installer could not be verified: " + Path.Combine(root.Path, name)
+                    + ". Close running Microsoft installers before moving this file out of the cache manually, then retry. Setup did not launch or remove it.", exception);
             }
             catch { existing.Dispose(); throw; }
         }
@@ -392,7 +423,7 @@ public static class PreparationPackages
             _lastUpdate = now;
             _lastState = value.State;
             progress?.Report(new(title,
-            value.State == PackageDownloadProgressState.WaitingToRetry ? "Connection interrupted. Retrying the verified download." : "Verifying SHA-256 and publisher before use.",
+            value.State == PackageDownloadProgressState.WaitingToRetry ? "Connection interrupted. Retrying the download." : $"{value.BytesReceived:N0} bytes downloaded. SHA-256 and publisher verification follow the download.",
             value.TotalBytes is > 0 ? (double)value.BytesReceived / value.TotalBytes.Value : null));
         }
     }

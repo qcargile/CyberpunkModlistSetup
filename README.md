@@ -2,17 +2,17 @@
 
 Preparation and MO2 plugins for Chrome & Blood, the Cyberpunk 2077 Wabbajack list.
 
-[Setup 1.0.1](https://github.com/qcargile/CyberpunkModlistSetup/releases/tag/v1.0.1) · [Archives 1.0.1](https://github.com/qcargile/CyberpunkModlistSetup/releases/tag/archives-v1.0.1) · [Update Notice 1.0](https://github.com/qcargile/CyberpunkModlistSetup/releases/tag/v1.0)
+[Setup 1.1.0](https://github.com/qcargile/CyberpunkModlistSetup/releases/tag/v1.1.0) · [Archives 1.0.1](https://github.com/qcargile/CyberpunkModlistSetup/releases/tag/archives-v1.0.1) · [Update Notice 1.0](https://github.com/qcargile/CyberpunkModlistSetup/releases/tag/v1.0)
 
 | Download | Use it for |
 | --- | --- |
-| `ChromeBlood-Setup-1.0.1.zip` | Prepare the game and Windows, then open Chrome & Blood in Wabbajack. |
+| `ChromeBlood-Setup-1.1.0.zip` | Prepare the game and Windows, then open Chrome & Blood in Wabbajack. |
 | `ChromeBlood-Archives-1.0.1.zip` | Drag archives into order in MO2, with conflict highlights and an order saved per profile. |
 | `ChromeBlood-Update-Notice-1.0.zip` | Get a notification in MO2 when a newer Chrome & Blood version or a changed Wabbajack package is published. |
 
 The plugins install independently. Setup does not install them. C&B list authors can include them in the Wabbajack package.
 
-Setup 1.0.1 targets Cyberpunk 2077 2.5. Use it with a C&B revision that supports that game version; it is not intended for older 2.31a revisions. Releasing these tools does not update the modlist itself.
+Setup 1.1.0 targets Cyberpunk 2077 2.5. Use it with a C&B revision that supports that game version; it is not intended for older 2.31a revisions. Releasing these tools does not update the modlist itself.
 
 ## Setup
 
@@ -20,13 +20,17 @@ Extract the Setup ZIP and run `ChromeBloodSetup.exe`. Keep its `Assets` and `lic
 
 Setup finds Cyberpunk 2077, checks the required game version and DLC, and selects missing Visual C++ runtimes, Windows long paths and Wabbajack for preparation. Optional settings resets, shared crash-report cleanup, Steam update preferences and legacy DirectX stay separate. Review the selected actions before they run. Windows requests administrator permission only for the steps that need it.
 
-For Steam English public build **26161058, Cyberpunk 2077 2.5**, including Phantom Liberty and REDmod, cleanup compares the game folder with a pinned Steam file inventory. Extra files move to retained backups. Changed official files receive backup copies and stay in place for Steam to repair. Missing or damaged official files require store repair and another check. Other storefronts, languages and depot sets use the more limited known-location cleanup and are not reported as fully verified.
+For Steam English public build **26161058, Cyberpunk 2077 2.5**, including Phantom Liberty and REDmod, cleanup compares the game folder with a pinned Steam file inventory. Extra files move to retained backups. Changed official files receive backup copies and stay in place for Steam to repair. Changed files can be kept intentionally or repaired through the game store. Checks do not block opening Wabbajack. Other storefronts, languages and depot sets use the more limited known-location cleanup and are not reported as fully verified.
 
 DLSS replacements named `nvngx_dlss.dll`, `nvngx_dlssd.dll` and `nvngx_dlssg.dll` in `bin/x64` and `tools/redmod/bin` are kept when their signatures verify as NVIDIA and their signed product names match the component. Their verified `.dlsss` backups are also kept for DLSS Swapper. These files appear as preserved customizations, not repair requirements. A missing component, invalid signature or wrong component still needs attention. A valid signature identifies the publisher; it does not guarantee compatibility with the game.
 
-Close the game and mod managers before cleaning, and close Steam when cleaning its game folder. Purge Vortex deployments through Vortex first. Saved Games and MO2/download folders outside the selected game folder are untouched. Extra files inside that folder, including a misplaced MO2 or downloads folder, can move to backup. Resetting settings and clearing shared REDengine diagnostics require separate choices. Interrupted cleanup offers continuation from its recorded transaction. There is no automatic backup-restore screen; backup locations are shown in Details and backups.
+Close the game and mod managers before cleaning, and close Steam when cleaning its game folder. Purge Vortex deployments through Vortex first. Saved Games and MO2/download folders outside the selected game folder are untouched. Extra files inside that folder, including a misplaced MO2 or downloads folder, can move to backup. Resetting settings and clearing shared REDengine diagnostics require separate choices. Interrupted cleanup can be retried from its recorded transaction, handled manually or skipped. Choose backup folders through Change folders; existing recovery keeps its original locations. There is no automatic backup-restore screen.
 
 Cleanup currently requires free backup capacity equal to the selected data, even for moves on the same drive. Cross-volume cleanup is not supported.
+
+Keep intentional changes with **Keep** or **Keep my changes**. Wabbajack and backup folders can be changed, and an existing Wabbajack.exe can be selected directly. Main screens stay short; technical details and manual instructions are expandable. A failed optional action does not stop the other selected preparation.
+
+Choose **Skip setup**, or close Setup and open Wabbajack yourself whenever you prefer.
 
 Setup ends at **Open C&B in Wabbajack**. Nexus sign-in, download and installation folders, archive reuse, list installation and updates belong to Wabbajack.
 
@@ -51,7 +55,7 @@ dotnet test --solution ChromeBlood.Setup.slnx -c Release -- --filter "TestCatego
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1
 ```
 
-The packaging command creates the three ZIPs and their checksums under `dist`, using the version in `Directory.Build.props` for the folder and archive names. It refuses an existing output directory. Setup and Archives have separate 1.0.1 releases; Update Notice remains at 1.0. MO2 plugin tests under `MO2/tests` use MO2's own Python and Qt libraries; the parser-only notification tests also run with ordinary Python.
+The packaging command creates the three ZIPs and their checksums under `dist`, using the version in `Directory.Build.props` for the folder and archive names. It refuses an existing output directory. Setup is released as 1.1.0; Archives remains at 1.0.1 and Update Notice remains at 1.0. MO2 plugin tests under `MO2/tests` use MO2's own Python and Qt libraries; the parser-only notification tests also run with ordinary Python.
 
 The Steam reference contains file names, sizes and hashes, not game content. Its provenance and import procedure are in [fixtures/vanilla/README.md](fixtures/vanilla/README.md). A different game build needs a matching reference before whole-folder cleanup can classify it.
 

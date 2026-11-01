@@ -1,9 +1,9 @@
 using System.Text.Json;
 using ChromeBlood.Core.Acquisition;
 using ChromeBlood.Core.Parity;
-using ChromeBlood.Core.Preparation;
 using ChromeBlood.Core.Cleanup;
 using ChromeBlood.Core.Vanilla;
+using ChromeBlood.Core.Preparation;
 using ChromeBlood.Testing;
 using ChromeBlood.Setup.ViewModels;
 
@@ -29,16 +29,75 @@ public sealed class PreparationTests
             new(@"bin\x64\nvngx_dlss.dll.dlsss", false, VanillaEntryStatus.VendorBackup)], false, true);
         CleanupPreparationPreview preview = new(CleanupPreparationService.OfficialFindings(scan).ToArray(), [], "backup", "settings") { GameFiles = scan };
         PreparationSnapshot snapshot = (PreparationSnapshot)typeof(PreparationService).GetMethod("WithCleanup", fields)!
-            .Invoke(service, [new PreparationSnapshot(), preview, "game"])!;
+            .Invoke(service, [new PreparationSnapshot { SelectedGameRoot = @"C:\Games\Cyberpunk 2077" }, preview, "game"])!;
         Assert.AreEqual(current == VanillaEntryStatus.VendorReplacement ? 2 : 1, snapshot.PreservedDlssFiles);
         Assert.AreEqual(1, snapshot.ChangedOfficialFiles);
         Assert.IsFalse(snapshot.ReadyForHandoff);
         Assert.AreEqual(@"bin\x64\Cyberpunk2077.exe", snapshot.CleanupItems.Single(item => item.Scope == "Changed official").Path);
         typeof(PreparationService).GetField("_verifiedCleanup", fields)!.SetValue(service, null);
         snapshot = (PreparationSnapshot)typeof(PreparationService).GetMethod("WithCleanup", fields)!
-            .Invoke(service, [new PreparationSnapshot(), preview, "game"])!;
+            .Invoke(service, [new PreparationSnapshot { SelectedGameRoot = @"C:\Games\Cyberpunk 2077" }, preview, "game"])!;
         Assert.IsTrue(snapshot.ReadyForHandoff);
         Assert.AreEqual(0L, snapshot.CleanupBytes);
+    }
+
+    [TestMethod]
+    public async Task ChosenLocationsAndKeptPathsSurviveReopeningWithoutChangingTheRequest()
+    {
+        using TemporaryDirectory temporary = new();
+        string game = Path.Combine(temporary.Path, "game");
+        Directory.CreateDirectory(Path.Combine(game, "bin", "x64"));
+        File.WriteAllText(Path.Combine(game, "bin", "x64", "Cyberpunk2077.exe"), "test executable");
+        string state = Path.Combine(temporary.Path, "state");
+        string chosenApp = Path.Combine(temporary.Path, "chosen-app");
+        PreparationService first = new(state);
+        PreparationSnapshot selected = new()
+        {
+            SelectedGameRoot = game,
+            WabbajackDirectory = chosenApp,
+            GameBackupRoot = @"D:\ChosenBackups",
+            SettingsBackupRoot = @"C:\ChosenSettingsBackups",
+            KeptGamePaths = [@"bin\x64\nvngx_dlss.dll"]
+        };
+        Assert.IsNull(first.RememberLocations(selected));
+        PreparationSnapshot reopened = await new PreparationService(state).ScanAsync(null, null);
+        Assert.AreEqual(game, reopened.SelectedGameRoot);
+        Assert.AreEqual(chosenApp, reopened.WabbajackDirectory);
+        Assert.AreEqual(selected.GameBackupRoot, reopened.GameBackupRoot);
+        Assert.AreEqual(selected.SettingsBackupRoot, reopened.SettingsBackupRoot);
+        CollectionAssert.AreEqual(selected.KeptGamePaths.ToArray(), reopened.KeptGamePaths.ToArray());
+        string otherGame = Path.Combine(temporary.Path, "other-game");
+        Directory.CreateDirectory(Path.Combine(otherGame, "bin", "x64"));
+        File.WriteAllText(Path.Combine(otherGame, "bin", "x64", "Cyberpunk2077.exe"), "other executable");
+        PreparationSnapshot other = await new PreparationService(state).ScanAsync(otherGame, chosenApp);
+        Assert.HasCount(0, other.KeptGamePaths);
+        Assert.AreNotEqual(selected.GameBackupRoot, other.GameBackupRoot);
+    }
+
+    [TestMethod]
+    public async Task FailedActionRetainsItsErrorAndAllowsTheFollowingAction()
+    {
+        List<string> failures = [];
+        bool downloaded = false;
+        Assert.IsFalse(await PreparationService.RunPreparationActionAsync("Cleanup", () => throw new UnauthorizedAccessException("Access denied: locked.archive"), failures, CancellationToken.None));
+        Assert.IsTrue(await PreparationService.RunPreparationActionAsync("Wabbajack", () => { downloaded = true; return Task.CompletedTask; }, failures, CancellationToken.None));
+        Assert.IsTrue(downloaded);
+        Assert.HasCount(1, failures);
+        StringAssert.Contains(failures[0], "locked.archive");
+    }
+
+    [TestMethod]
+    public async Task UserCancellationStopsTheNextPreparationAction()
+    {
+        List<string> failures = [];
+        using CancellationTokenSource cancellation = new();
+        await Assert.ThrowsExactlyAsync<OperationCanceledException>(() => PreparationService.RunPreparationActionAsync("Cleanup", () =>
+        { cancellation.Cancel(); return Task.CompletedTask; }, failures, cancellation.Token));
+        bool nextStarted = false;
+        await Assert.ThrowsExactlyAsync<OperationCanceledException>(() => PreparationService.RunPreparationActionAsync("Wabbajack", () =>
+        { nextStarted = true; return Task.CompletedTask; }, failures, cancellation.Token));
+        Assert.IsFalse(nextStarted);
+        Assert.HasCount(0, failures);
     }
 
     [TestMethod]

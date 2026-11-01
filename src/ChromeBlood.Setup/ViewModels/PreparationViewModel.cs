@@ -43,25 +43,41 @@ public sealed class PreparationViewModel : INotifyPropertyChanged
     private string? _backupRoot;
     private bool _handoffOpened;
     private bool _rebootRequired;
+    private bool _choosingLocation;
+    private string? _requestedGameBackup;
+    private string? _requestedSettingsBackup;
+    private IReadOnlyList<FileChoice> _fileChoices = [];
+    private bool _showFileChoices;
+    private string? _acceptedWabbajackFolder;
 
     public PreparationViewModel(PreparationService service)
     {
         _service = service;
         GameCommand = new RelayCommand(() => Navigate("game"), () => IsIdle);
         PrepareCommand = new RelayCommand(() => Navigate("prepare"), () => IsIdle && HasGame);
-        WabbajackCommand = new RelayCommand(() => Navigate("wabbajack"), () => IsIdle && ReadyForHandoff);
-        PrimaryCommand = new RelayCommand(Primary, () => IsIdle && HasGame && _snapshot is not null && (!IsWabbajackPage || ReadyForHandoff));
+        WabbajackCommand = new RelayCommand(() => Navigate("wabbajack"), () => IsIdle);
+        PrimaryCommand = new RelayCommand(Primary, () => IsIdle && _snapshot is not null && (IsWabbajackPage || HasGame));
         BackCommand = new RelayCommand(Back, () => IsIdle && (!IsGamePage || _review));
         RefreshCommand = new RelayCommand(() => _ = RefreshAsync(true), () => IsIdle);
         BrowseGameCommand = new RelayCommand(BrowseGame, () => IsIdle);
         BrowseWabbajackCommand = new RelayCommand(BrowseWabbajack, () => IsIdle);
+        UseExistingWabbajackCommand = new RelayCommand(UseExistingWabbajack, () => IsIdle);
+        AcceptWabbajackFolderCommand = new RelayCommand(() => { _acceptedWabbajackFolder = WabbajackDirectory; Notify(); }, () => IsIdle && HasVerifiedWabbajack);
+        BrowseGameBackupCommand = new RelayCommand(() => BrowseBackup(false), () => IsIdle && HasGame);
+        BrowseSettingsBackupCommand = new RelayCommand(() => BrowseBackup(true), () => IsIdle && HasGame);
+        KeepMyChangesCommand = new RelayCommand(KeepMyChanges, () => IsIdle && HasGame && !PendingCleanup);
+        ChangeLocationsCommand = new RelayCommand(() => Navigate("game"), () => IsIdle);
+        SkipSetupCommand = new RelayCommand(() => { _cleanGame = false; _resetSettings = false; _clearDiagnostics = false; Navigate("wabbajack"); }, () => IsIdle);
         ReviewCleanupCommand = new RelayCommand(ReviewCleanup, () => IsIdle && HasGame && (!CleanupBlocked || PendingCleanup));
-        CheckGameFilesCommand = new RelayCommand(CheckGameFiles, () => IsIdle && HasGame && !PendingCleanup);
-        ContinueWithoutCleanupCommand = new RelayCommand(ContinueWithoutCleanup, () => IsIdle && HasGame && !PendingCleanup && !NeedsGameRepair && !CleanupBlocked);
+        ReviewPreparationCommand = new RelayCommand(ReviewPreparation, () => IsIdle && HasGame && HasOtherPreparation);
+        CheckGameFilesCommand = new RelayCommand(CheckGameFiles, () => IsIdle && HasGame);
+        ContinueWithoutCleanupCommand = new RelayCommand(ContinueWithoutCleanup, () => IsIdle && HasGame);
         CancelCommand = new RelayCommand(Cancel, () => IsBusy && _cancellation?.IsCancellationRequested != true);
         OpenBackupCommand = new RelayCommand(() => OpenPath(_backupRoot), () => HasBackup && IsIdle);
+        OpenGameFolderCommand = new RelayCommand(() => OpenPath(GameRoot), () => HasGame && IsIdle);
+        OpenWabbajackFolderCommand = new RelayCommand(() => OpenPath(WabbajackDirectory), () => IsIdle);
         OpenLinkCommand = new RelayCommand<object?>(OpenLink, parameter => IsIdle && parameter is string { Length: > 0 });
-        _commands = [GameCommand, PrepareCommand, WabbajackCommand, PrimaryCommand, BackCommand, RefreshCommand, BrowseGameCommand, BrowseWabbajackCommand, ReviewCleanupCommand, CheckGameFilesCommand, ContinueWithoutCleanupCommand, CancelCommand, OpenBackupCommand, OpenLinkCommand];
+        _commands = [GameCommand, PrepareCommand, WabbajackCommand, PrimaryCommand, BackCommand, RefreshCommand, BrowseGameCommand, BrowseWabbajackCommand, UseExistingWabbajackCommand, AcceptWabbajackFolderCommand, BrowseGameBackupCommand, BrowseSettingsBackupCommand, KeepMyChangesCommand, ChangeLocationsCommand, SkipSetupCommand, ReviewCleanupCommand, ReviewPreparationCommand, CheckGameFilesCommand, ContinueWithoutCleanupCommand, CancelCommand, OpenBackupCommand, OpenGameFolderCommand, OpenWabbajackFolderCommand, OpenLinkCommand];
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -73,11 +89,21 @@ public sealed class PreparationViewModel : INotifyPropertyChanged
     public IRelayCommand RefreshCommand { get; }
     public IRelayCommand BrowseGameCommand { get; }
     public IRelayCommand BrowseWabbajackCommand { get; }
+    public IRelayCommand UseExistingWabbajackCommand { get; }
+    public IRelayCommand AcceptWabbajackFolderCommand { get; }
+    public IRelayCommand BrowseGameBackupCommand { get; }
+    public IRelayCommand BrowseSettingsBackupCommand { get; }
+    public IRelayCommand KeepMyChangesCommand { get; }
+    public IRelayCommand ChangeLocationsCommand { get; }
+    public IRelayCommand SkipSetupCommand { get; }
     public IRelayCommand ReviewCleanupCommand { get; }
+    public IRelayCommand ReviewPreparationCommand { get; }
     public IRelayCommand CheckGameFilesCommand { get; }
     public IRelayCommand ContinueWithoutCleanupCommand { get; }
     public IRelayCommand CancelCommand { get; }
     public IRelayCommand OpenBackupCommand { get; }
+    public IRelayCommand OpenGameFolderCommand { get; }
+    public IRelayCommand OpenWabbajackFolderCommand { get; }
     public IRelayCommand<object?> OpenLinkCommand { get; }
     public bool IsBusy => _busy;
     public bool IsIdle => !_busy && !_closing;
@@ -90,11 +116,28 @@ public sealed class PreparationViewModel : INotifyPropertyChanged
     public bool ShowChecklist => IsPreparePage && !_review;
     public bool ShowCleanup => IsPreparePage;
     public bool ShowPageHeading => !IsPreparePage;
-    public bool ShowSecondaryContinue => ShowChecklist && !PendingCleanup && !NeedsGameRepair && !CleanupBlocked && CleanupState is "Dirty" or "Unverified";
+    public bool ShowSecondaryContinue => ShowChecklist && !CleanupDeferred && CleanupState != "Clean";
+    public bool CleanupDeferred => _snapshot?.CleanupDeferred == true;
+    public bool ShowManualCleanup => ShowCleanup && (PendingCleanup || CleanupBlocked || HasCleanupFailure || CleanupDeferred || NeedsGameRepair);
+    public string ManualCleanupGuidance => _snapshot?.ManualCleanupGuidance ?? "";
+    public IReadOnlyList<CleanupItemLabel> ManualCleanupItems => _snapshot?.ManualCleanupItems ?? [];
     public bool HasGame => !string.IsNullOrWhiteSpace(_snapshot?.SelectedGameRoot);
+    public IReadOnlyList<FileChoice> FileChoices => _fileChoices;
+    public bool ShowFileChoices { get => _showFileChoices; set { _showFileChoices = value; Notify(); } }
+    public bool HasFileChoices => _fileChoices.Count > 0;
+    public string FilesToReviewTitle => $"Review {_fileChoices.Count:N0} {(_fileChoices.Count == 1 ? "file or folder" : "files and folders")}";
+    public int KeptFileCount => _snapshot?.CleanupItems.Count(item => item.IsKept) ?? 0;
+    public string GameBackupLocation => _snapshot?.GameBackupRoot ?? _requestedGameBackup ?? "Suggested after choosing a game";
+    public string SettingsBackupLocation => _snapshot?.SettingsBackupRoot ?? _requestedSettingsBackup ?? "Suggested after choosing a game";
+    public bool HasVerifiedWabbajack => _snapshot?.Checks.Any(check => check.Id == "wabbajack" && check.Status == CheckState.Ready) == true;
+    public bool HasWabbajackLocationWarning => NeedsWabbajackFolder;
+    public bool CanUseWabbajackFolderAnyway => NeedsWabbajackFolder && HasVerifiedWabbajack && !WabbajackFolderAccepted;
+    private bool WabbajackFolderAccepted => string.Equals(_acceptedWabbajackFolder, WabbajackDirectory, StringComparison.OrdinalIgnoreCase);
+    public string WabbajackLocationDetail => _snapshot?.Checks.FirstOrDefault(check => check.Id == "wabbajackfolder")?.Detail ?? "";
     public bool HasMultipleGames => GameCandidates.Count > 1;
     public bool IsSteam => _selectedGame?.Store.Equals("Steam", StringComparison.OrdinalIgnoreCase) == true;
-    public bool ReadyForHandoff => _snapshot?.ReadyForHandoff == true;
+    public bool ReadyForHandoff => _snapshot?.ReadyForHandoff == true && !NeedsGameRepair
+        && (CleanupDeferred || !PendingCleanup && !CleanupBlocked);
     public bool PendingCleanup => _snapshot?.PendingCleanup == true;
     public string CleanupFailure => _cleanupFailure;
     public bool HasCleanupFailure => !string.IsNullOrWhiteSpace(_cleanupFailure);
@@ -113,6 +156,8 @@ public sealed class PreparationViewModel : INotifyPropertyChanged
     public bool NeedsLongPaths => NeedsPreparation("longpaths");
     public bool NeedsWabbajack => NeedsPreparation("wabbajack");
     public bool HasAutomaticPreparation => NeedsRuntimes || NeedsLongPaths || NeedsWabbajack;
+    public IReadOnlyList<CheckRow> PreparationActions => _snapshot?.Checks.Where(check => check.Status != CheckState.Ready
+        && check.Id is "vcredist" or "longpaths" or "wabbajack").Select(check => new CheckRow(check)).ToArray() ?? [];
     public bool AutomaticPreparationReady => new[] { "vcredist", "longpaths", "wabbajack" }
         .All(id => _snapshot?.Checks.Any(check => check.Id == id && check.Status == CheckState.Ready) == true);
     public bool ShowSteamChoice => IsSteam && NeedsPreparation("steamupdate");
@@ -120,8 +165,8 @@ public sealed class PreparationViewModel : INotifyPropertyChanged
     public bool NeedsWabbajackFolder => NeedsPreparation("wabbajackfolder");
     public string ReadyChecksTitle => _readyChecks.Count == 1 ? "1 requirement ready" : $"{_readyChecks.Count} requirements ready";
     public IReadOnlyList<CleanupItemLabel> CleanupItems => _snapshot?.CleanupItems ?? [];
-    public IReadOnlyList<CleanupItemLabel> SelectedCleanupItems => CleanupItems.Where(item =>
-        item.Scope == "Game" && CleanGame || item.Scope == "Settings" && ResetSettings || item.Scope == "Diagnostics" && ClearDiagnostics).ToArray();
+    public IReadOnlyList<CleanupItemLabel> SelectedCleanupItems => CleanupItems.Where(item => !item.IsKept && (
+        item.Scope is "Game" or "Changed official" && CleanGame || item.Scope == "Settings" && ResetSettings || item.Scope == "Diagnostics" && ClearDiagnostics)).ToArray();
     public string GameMarker => HasGame && !IsGamePage ? "✓" : "1";
     public string PrepareMarker => ReadyForHandoff && !IsPreparePage ? "✓" : "2";
     public string GameDetail => _selectedGame is null ? "Select the folder containing bin\\x64\\Cyberpunk2077.exe." : $"{_selectedGame.Store} installation. Version {_selectedGame.Version}";
@@ -133,36 +178,36 @@ public sealed class PreparationViewModel : INotifyPropertyChanged
             + (_snapshot.GameFileVerifiedAt is { } verified ? $" Verified {verified.ToLocalTime():g}." : "")
         : "Official file contents have not been verified. A full check can take several minutes.";
     public bool NeedsGameRepair => (_snapshot?.ChangedOfficialFiles ?? 0) > 0 || (_snapshot?.MissingOfficialFiles ?? 0) > 0;
-    public bool ShowOfficialBackupAction => ShowChecklist && CleanupState == "Repair" && !CleanupBlocked && (_snapshot?.ChangedOfficialFiles ?? 0) > 0;
     public int ExtraGameLocations => _extraGameLocations;
     public bool CleanupBlocked => _snapshot?.CleanupIssue == true || (_snapshot?.UnreadableGameFiles ?? 0) > 0
         || _snapshot is { GameFileReferenceMatched: true, GameFileScanComplete: false };
     public bool GameIsClean => _snapshot is { GameFileReferenceMatched: true, GameFileScanComplete: true, GameFileHashesChecked: true, CleanupIssue: false, PendingCleanup: false,
-        ChangedOfficialFiles: 0, MissingOfficialFiles: 0, UnreadableGameFiles: 0 } && ExtraGameLocations == 0;
+        ChangedOfficialFiles: 0, MissingOfficialFiles: 0, UnreadableGameFiles: 0 } && ExtraGameLocations == 0 && KeptFileCount == 0 && (_snapshot?.PreservedDlssFiles ?? 0) == 0;
     public string CleanupState => PendingCleanup ? "Pending" : CleanupBlocked ? "Blocked" : NeedsGameRepair ? "Repair" : ExtraGameLocations > 0 ? "Dirty"
-        : GameIsClean ? "Clean" : _snapshot?.GameFileReferenceMatched != true ? "Unsupported" : "Unverified";
+        : KeptFileCount > 0 || (_snapshot?.PreservedDlssFiles ?? 0) > 0 ? "Kept" : GameIsClean ? "Clean" : _snapshot?.GameFileReferenceMatched != true ? "Unsupported" : "Unverified";
     public string CleanupTitle => CleanupState switch
     {
-        "Pending" => HasCleanupFailure ? "Cleanup needs attention" : "Finish your cleanup",
-        "Repair" => "Your game needs repair",
-        "Blocked" => "Check needs attention",
-        "Dirty" => "Your game needs cleanup",
-        "Clean" => _snapshot?.PreservedDlssFiles > 0 ? "Your game is ready" : "Your game is clean",
+        "Pending" => "Cleanup is unfinished",
+        "Repair" => "Review game changes",
+        "Blocked" => "Check unavailable",
+        "Dirty" => "Extra files found",
+        "Kept" => "Keeping your changes",
+        "Clean" => "Your game is clean",
         "Unsupported" => "Full check unavailable",
         _ => "Ready to check your game"
     };
-    public string CleanupDetail => (CleanupState switch
+    public string CleanupDetail => CleanupState switch
     {
-        "Pending" => HasCleanupFailure ? "The last attempt could not finish. Resolve the error below, then retry. Saved files are retained." : "Resume safely from the saved backup.",
-        "Repair" => _review && CleanGame ? "Changed official files will be copied to backup; extra files will be removed." : "Repair official files through your game store, then verify again.",
-        "Blocked" => HasCleanupFailure ? "Resolve the error below, then check again. Saved files are retained." : "Close the game and mod tools, resolve the findings in Details, then check again.",
-        "Dirty" => _review && CleanGame ? $"{ExtraGameLocations:N0} extra {(ExtraGameLocations == 1 ? "item" : "items")} will be backed up and removed." : $"{ExtraGameLocations:N0} extra {(ExtraGameLocations == 1 ? "item" : "items")} found.",
-        "Clean" => _snapshot?.PreservedDlssFiles > 0 ? "Game files checked. No cleanup needed." : "Official files verified. No extra game files found.",
+        "Pending" => "Backups are kept. Retry cleanup, handle it manually, or continue.",
+        "Repair" => "Files differ from the store version. Keep intentional changes or back them up before repair.",
+        "Blocked" => "Automatic cleanup is unavailable. You can still continue.",
+        "Dirty" => $"{ExtraGameLocations:N0} extra {(ExtraGameLocations == 1 ? "item" : "items")}. Keep what you want; cleanup is optional.",
+        "Kept" => $"{KeptFileCount + (_snapshot?.PreservedDlssFiles ?? 0):N0} files or folders will stay in place.",
+        "Clean" => "Official files verified. No extra game files found.",
         "Unsupported" => "Known mod locations were checked; a full file reference is unavailable for this installation.",
         _ => "Verify the game files before installing Chrome & Blood."
-    }) + (_snapshot?.PreservedDlssFiles > 0 ? " Custom DLSS files and verified Swapper backups are kept." : "");
-    public string CleanupSymbol => CleanupState is "Clean" ? "✓" : CleanupState is "Unverified" ? "?" : "!";
-    public string SecondaryContinueText => CleanupState == "Dirty" ? "Continue without cleanup" : "Continue without verification";
+    };
+    public string SecondaryContinueText => "Skip cleanup";
     public string ReviewTitle => PendingCleanup && HasCleanupFailure ? "Retry the saved cleanup" : PendingCleanup ? "Resume the saved cleanup" : CleanGame ? "Review cleanup" : "Review preparation";
     public string ReviewReminder => CleanGame || ResetSettings || ClearDiagnostics ? "Close the game, Steam and mod managers before continuing." : "Only your selected preparation will run.";
     public IReadOnlyList<string> ReviewedPreparationActions => AdditionalActions();
@@ -174,25 +219,26 @@ public sealed class PreparationViewModel : INotifyPropertyChanged
     public bool HasSelectedWork => CleanGame || ResetSettings || ClearDiagnostics || InstallRuntimes && NeedsPreparation("vcredist")
         || EnableLongPaths && NeedsPreparation("longpaths") || DownloadWabbajack && NeedsPreparation("wabbajack")
         || SteamLaunchOnly && IsSteam && NeedsPreparation("steamupdate") || LegacyDirectX && NeedsPreparation("directx");
+    public bool HasOtherPreparation => InstallRuntimes && NeedsPreparation("vcredist") || EnableLongPaths && NeedsPreparation("longpaths")
+        || DownloadWabbajack && NeedsPreparation("wabbajack") || SteamLaunchOnly && IsSteam && NeedsPreparation("steamupdate")
+        || LegacyDirectX && NeedsPreparation("directx");
     private string ResumeText => HasCleanupFailure ? "Retry cleanup" : "Resume cleanup";
     public string PrimaryText => _review ? CleanGame || ResetSettings || ClearDiagnostics ? PendingCleanup ? ResumeText : "Back up and clean" : "Prepare for installation"
-        : IsGamePage ? "Continue" : IsWabbajackPage ? "Open C&B in Wabbajack" : CleanupState switch
-        {
-            "Pending" => ResumeText,
-            "Repair" => "Verify again",
-            "Blocked" => "Check again",
-            "Dirty" => "Clean up game",
-            "Unverified" => "Verify game files",
-            _ => ReadyForHandoff && !HasSelectedWork ? "Continue to Wabbajack" : "Review preparation"
-        };
+        : IsGamePage ? "Continue" : IsWabbajackPage ? NeedsWabbajackFolder && !WabbajackFolderAccepted ? "Change Wabbajack folder"
+            : HasVerifiedWabbajack ? "Open C&B in Wabbajack" : "Get Wabbajack"
+        : HasSelectedWork ? "Review selected actions" : "Continue to Wabbajack";
     public string BackText => _review ? "Back to preparation" : IsWabbajackPage ? "Back to preparation" : IsPreparePage ? "Change game installation" : "";
     public string ProgressTitle => _closing ? "Stopping preparation" : _progressTitle;
     public string ProgressDetail => _closing ? "Waiting for the current operation to finish safely before closing." : _progressDetail;
     public double ProgressFraction => _progressFraction ?? 0;
     public bool ProgressIndeterminate => _progressFraction is null;
     public string CancelText => _cancellation?.IsCancellationRequested == true ? "Stopping..." : "Cancel";
-    public string Message => _message;
-    public string HandoffDetail => _handoffOpened ? "Chrome & Blood is open in Wabbajack. Continue there." : "The required preparation checks are ready.";
+    public string Message => _message.StartsWith("These choices apply", StringComparison.Ordinal)
+        ? "These choices apply for this session, but could not be saved."
+        : _message.Length > 150 || _message.Contains('\n') ? "Some actions need attention. See operation details." : _message;
+    public string MessageDetails => _message;
+    public bool HasMessageDetails => _message.StartsWith("These choices apply", StringComparison.Ordinal) || _message.Length > 150 || _message.Contains('\n');
+    public string HandoffDetail => _handoffOpened ? "Chrome & Blood was sent to Wabbajack." : "Setup is optional. Open Wabbajack whenever you're ready.";
 
     public GameCandidate? SelectedGame
     {
@@ -201,6 +247,7 @@ public sealed class PreparationViewModel : INotifyPropertyChanged
         {
             if (!IsIdle || value is null || value.Root == _selectedGame?.Root) return;
             _requestedGame = value.Root;
+            _requestedGameBackup = null;
             _ = ScanAsync(false);
         }
     }
@@ -247,7 +294,7 @@ public sealed class PreparationViewModel : INotifyPropertyChanged
 
     public Task RefreshAsync(bool force = false)
     {
-        if (!_initialized || !IsIdle || _review && !force) return _operation;
+        if (!_initialized || !IsIdle || _choosingLocation || _review && !force) return _operation;
         return ScanAsync(false);
     }
 
@@ -259,16 +306,19 @@ public sealed class PreparationViewModel : INotifyPropertyChanged
         await _operation;
     }
 
-    private Task ScanAsync(bool choosePage)
+    private Task ScanAsync(bool choosePage, bool rememberChoices = false)
     {
         return StartOperation(async token =>
         {
             _progressTitle = "Checking preparation";
             _progressDetail = "Finding the game and checking Windows requirements.";
             Notify();
-            PreparationSnapshot snapshot = await _service.ScanAsync(_requestedGame, _requestedWabbajack, token);
+            PreparationSnapshot snapshot = await _service.ScanAsync(_requestedGame, _requestedWabbajack, token,
+                _requestedGameBackup, _requestedSettingsBackup);
             UpdateSnapshot(snapshot);
-            if (choosePage || !HasGame || IsWabbajackPage && !ReadyForHandoff) _page = HasGame ? "prepare" : "game";
+            string? saved = rememberChoices ? _service.RememberLocations(snapshot) : null;
+            _message = rememberChoices && snapshot.CleanupIssue ? snapshot.CleanupFailure : saved ?? "";
+            if (choosePage || !HasGame && !IsWabbajackPage) _page = HasGame ? "prepare" : "game";
             _review = false;
         });
     }
@@ -288,7 +338,8 @@ public sealed class PreparationViewModel : INotifyPropertyChanged
     {
         try { await operation(cancellation.Token); }
         catch (OperationCanceledException) { _message = "Preparation cancelled. Completed actions and preserved files are kept."; }
-        catch (Exception exception) { _message = exception.Message; }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        { _message = "This action could not finish. Completed work is kept. Check the details, retry, or continue with the other preparation actions.\n" + exception.Message; }
         finally
         {
             _busy = false;
@@ -300,16 +351,23 @@ public sealed class PreparationViewModel : INotifyPropertyChanged
 
     internal void UpdateSnapshot(PreparationSnapshot snapshot)
     {
+        if (!string.Equals(_snapshot?.SelectedGameRoot, snapshot.SelectedGameRoot, StringComparison.OrdinalIgnoreCase))
+        { _backupRoot = null; _handoffOpened = false; _cleanGame = false; _resetSettings = false; _clearDiagnostics = false; }
+        _backupRoot = snapshot.RetainedBackupRoot ?? _backupRoot;
         _snapshot = snapshot;
         _cleanupFailure = snapshot.CleanupFailure;
-        _extraGameLocations = snapshot.CleanupItems.Count(item => item.Scope == "Game");
+        _extraGameLocations = snapshot.CleanupItems.Count(item => item.Scope == "Game" && !item.IsKept);
+        _fileChoices = snapshot.CleanupItems.Where(item => item.Scope is "Game" or "Changed official")
+            .Select(item => new FileChoice(item, SetKeptChoice)).ToArray();
         if (GameIsClean) _cleanGame = false;
         if (snapshot.PendingCleanup) { _resetSettings = false; _clearDiagnostics = false; }
         _readyChecks = snapshot.Checks.Where(check => check.Required && check.Status == CheckState.Ready).Select(check => new CheckRow(check)).ToArray();
         _manualChecks = snapshot.Checks.Where(check => check.Required && check.Status != CheckState.Ready
             && check.Id is not ("vcredist" or "longpaths" or "wabbajack")).Select(check => new CheckRow(check)).ToArray();
-        _requestedGame = snapshot.SelectedGameRoot;
+        if (snapshot.SelectedGameRoot is not null) _requestedGame = snapshot.SelectedGameRoot;
         _requestedWabbajack = snapshot.WabbajackDirectory;
+        _requestedGameBackup = snapshot.GameBackupRoot;
+        _requestedSettingsBackup = snapshot.SettingsBackupRoot;
         _selectedGame = snapshot.GameCandidates.FirstOrDefault(candidate => candidate.Root.Equals(snapshot.SelectedGameRoot, StringComparison.OrdinalIgnoreCase));
     }
 
@@ -346,19 +404,27 @@ public sealed class PreparationViewModel : INotifyPropertyChanged
         else if (IsGamePage) Navigate("prepare");
         else if (IsWabbajackPage)
         {
+            if (NeedsWabbajackFolder && !WabbajackFolderAccepted) { BrowseWabbajack(); return; }
+            if (!HasVerifiedWabbajack)
+            { OpenLink("https://github.com/wabbajack-tools/wabbajack/releases/latest"); return; }
             PreparationSnapshot snapshot = _snapshot;
             _ = StartOperation(async token =>
             {
                 _progressTitle = "Opening Chrome & Blood in Wabbajack";
                 _progressDetail = "";
                 Notify();
-                _message = await _service.OpenWabbajackAsync(snapshot, token);
-                _handoffOpened = true;
+                try
+                {
+                    _message = await _service.OpenWabbajackAsync(snapshot, token, WabbajackFolderAccepted);
+                    _handoffOpened = true;
+                }
+                catch (Exception exception) when (exception is not OutOfMemoryException && !token.IsCancellationRequested)
+                {
+                    _handoffOpened = false;
+                    _message = "Wabbajack could not be opened automatically. Use Open Wabbajack folder, open Wabbajack.exe, choose Browse Modlists and search for Chrome & Blood.\n" + exception.Message;
+                }
             });
         }
-        else if (PendingCleanup || CleanupState == "Dirty") ReviewCleanup();
-        else if (CleanupBlocked) _ = RefreshAsync(true);
-        else if (NeedsGameRepair || CleanupState == "Unverified") CheckGameFiles();
         else ReviewOrContinue();
     }
 
@@ -366,7 +432,6 @@ public sealed class PreparationViewModel : INotifyPropertyChanged
     {
         UpdateSnapshot(result.Snapshot);
         _message = result.Message;
-        if (PendingCleanup && !result.Completed && !result.Cancelled) _cleanupFailure = result.Message;
         _backupRoot = result.BackupRoot ?? _backupRoot;
         _rebootRequired |= result.RebootRequired;
         if (_rebootRequired) _message += " Restart Windows before launching the game. Wabbajack can download meanwhile.";
@@ -378,15 +443,26 @@ public sealed class PreparationViewModel : INotifyPropertyChanged
 
     private void ContinueWithoutCleanup()
     {
-        if (!IsIdle || PendingCleanup || NeedsGameRepair || CleanupBlocked) return;
+        if (!IsIdle || _snapshot is null) return;
+        UpdateSnapshot(_service.DeferCleanup(_snapshot));
         _cleanGame = false;
+        if (PendingCleanup || CleanupBlocked || HasCleanupFailure) { _resetSettings = false; _clearDiagnostics = false; }
+        _message = "Cleanup skipped. Your files and backups are kept.";
         ReviewOrContinue();
     }
 
     private void ReviewOrContinue()
     {
-        if (ReadyForHandoff && !HasSelectedWork) Navigate("wabbajack");
+        if (!HasSelectedWork) Navigate("wabbajack");
         else { _review = true; Notify(); }
+    }
+
+    private void ReviewPreparation()
+    {
+        _cleanGame = false;
+        _resetSettings = false;
+        _clearDiagnostics = false;
+        ReviewOrContinue();
     }
 
     private void ReviewCleanup()
@@ -400,7 +476,7 @@ public sealed class PreparationViewModel : INotifyPropertyChanged
 
     private void CheckGameFiles()
     {
-        if (_snapshot is null || !IsIdle || PendingCleanup) return;
+        if (_snapshot is null || !IsIdle) return;
         PreparationSnapshot reviewed = _snapshot;
         _ = StartOperation(async token =>
         {
@@ -415,6 +491,7 @@ public sealed class PreparationViewModel : INotifyPropertyChanged
                 Notify();
             });
             UpdateSnapshot(await _service.VerifyGameFilesAsync(reviewed, progress, token));
+            _message = "";
         });
     }
 
@@ -435,20 +512,65 @@ public sealed class PreparationViewModel : INotifyPropertyChanged
 
     private void BrowseGame()
     {
-        OpenFolderDialog dialog = new() { Title = "Choose your Cyberpunk 2077 game folder" };
-        if (HasGame && Directory.Exists(GameRoot)) dialog.InitialDirectory = GameRoot;
-        if (dialog.ShowDialog(Application.Current.MainWindow) != true) return;
-        _requestedGame = dialog.FolderName;
-        _ = ScanAsync(false);
+        ChooseFolder("Choose your Cyberpunk 2077 game folder", GameRoot, path => { _requestedGame = path; _requestedGameBackup = null; });
     }
 
     private void BrowseWabbajack()
     {
-        OpenFolderDialog dialog = new() { Title = "Choose the folder for the Wabbajack app" };
+        ChooseFolder("Choose the Wabbajack app folder", WabbajackDirectory, path => _requestedWabbajack = path);
+    }
+
+    private void BrowseBackup(bool settings)
+        => ChooseFolder(settings ? "Choose settings backup folder" : "Choose game backup folder",
+            settings ? SettingsBackupLocation : GameBackupLocation,
+            path => { if (settings) _requestedSettingsBackup = path; else _requestedGameBackup = path; });
+
+    private void ChooseFolder(string title, string current, Action<string> selected)
+    {
+        OpenFolderDialog dialog = new() { Title = title };
+        if (Directory.Exists(current)) dialog.InitialDirectory = current;
+        _choosingLocation = true;
+        try
+        {
+            if (dialog.ShowDialog(Application.Current.MainWindow) != true) return;
+            selected(dialog.FolderName);
+        }
+        finally { _choosingLocation = false; }
+        _ = ScanAsync(false, true);
+    }
+
+    private void UseExistingWabbajack()
+    {
+        OpenFileDialog dialog = new() { Title = "Choose Wabbajack.exe", Filter = "Wabbajack|Wabbajack.exe" };
         if (Directory.Exists(WabbajackDirectory)) dialog.InitialDirectory = WabbajackDirectory;
-        if (dialog.ShowDialog(Application.Current.MainWindow) != true) return;
-        _requestedWabbajack = dialog.FolderName;
-        _ = ScanAsync(false);
+        _choosingLocation = true;
+        try
+        {
+            if (dialog.ShowDialog(Application.Current.MainWindow) != true) return;
+            _requestedWabbajack = Path.GetDirectoryName(dialog.FileName);
+        }
+        finally { _choosingLocation = false; }
+        _ = ScanAsync(false, true);
+    }
+
+    private void SetKeptChoice(string path, bool keep)
+    {
+        if (!IsIdle || PendingCleanup || _snapshot is null) return;
+        string[] paths = _snapshot.KeptGamePaths.Where(value => !value.Equals(path, StringComparison.OrdinalIgnoreCase))
+            .Concat(keep ? [path] : []).ToArray();
+        UpdateSnapshot(_service.KeepGamePaths(_snapshot, paths));
+        _message = _service.RememberLocations(_snapshot) ?? "";
+        Notify();
+    }
+
+    private void KeepMyChanges()
+    {
+        if (_snapshot is null || PendingCleanup) return;
+        UpdateSnapshot(_service.KeepGamePaths(_snapshot, _snapshot.KeptGamePaths.Concat(_snapshot.CleanupItems
+            .Where(item => item.Scope is "Game" or "Changed official").Select(item => item.Path))));
+        _cleanGame = false;
+        _message = _service.RememberLocations(_snapshot) ?? "Your changes will stay in place.";
+        Notify();
     }
 
     private void Cancel()
@@ -504,6 +626,25 @@ public sealed class PreparationViewModel : INotifyPropertyChanged
             CheckState.Optional => "Optional",
             _ => "Failed"
         };
+    }
+
+    public sealed class FileChoice(CleanupItemLabel item, Action<string, bool> changed) : INotifyPropertyChanged
+    {
+        private bool _keep = item.IsKept;
+        public string Path => item.Path;
+        public string Detail => item.Scope == "Changed official" ? "Different from the store version" : "Added file or folder";
+        public bool Keep
+        {
+            get => _keep;
+            set
+            {
+                if (_keep == value) return;
+                _keep = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Keep)));
+                changed(Path, value);
+            }
+        }
+        public event PropertyChangedEventHandler? PropertyChanged;
     }
 
 }
