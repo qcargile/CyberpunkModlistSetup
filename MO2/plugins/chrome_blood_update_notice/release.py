@@ -1,3 +1,5 @@
+import base64
+import binascii
 import json
 import re
 from dataclasses import dataclass
@@ -15,6 +17,7 @@ COLLECTION_URL = "https://www.nexusmods.com/games/cyberpunk2077/collections/lrcd
 class Notice:
     installed: str
     available: str
+    build: str = ""
 
 
 def version_parts(value):
@@ -60,7 +63,7 @@ def installed_version(directory):
         return None
 
 
-def update_notice(data, installed):
+def update_notice(data, installed, initial_build=None):
     try:
         baseline = version_parts(installed)
         releases = _json(data)
@@ -88,8 +91,26 @@ def update_notice(data, installed):
             if collection.get("slug") != "lrcdrr" or collection.get("domainName") != "cyberpunk2077":
                 return None
         available = release.get("version")
-        if version_parts(available) > baseline:
-            return Notice(installed, available)
+        available_parts = version_parts(available)
+        metadata = release.get("download_metadata")
+        build = ""
+        if metadata is not None:
+            if not isinstance(metadata, dict):
+                return None
+            package_hash = metadata.get("Hash")
+            if not isinstance(package_hash, str):
+                return None
+            try:
+                decoded = base64.b64decode(package_hash, validate=True)
+            except (ValueError, binascii.Error):
+                return None
+            if len(decoded) != 8:
+                return None
+            build = "package:" + base64.b64encode(decoded).decode("ascii")
+        if available_parts > baseline or (
+            available_parts == baseline and build and initial_build is not None and build != initial_build
+        ):
+            return Notice(installed, available, build)
     except (ValueError, RecursionError):
         pass
     return None

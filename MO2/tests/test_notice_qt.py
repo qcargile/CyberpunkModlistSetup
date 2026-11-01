@@ -234,19 +234,76 @@ class NoticeQtTests(unittest.TestCase):
             server.server_close()
             thread.join()
 
-    def release_body(self, version):
-        return json.dumps([{
+    def release_body(self, version, package_hash=None):
+        release = {
             "game": "cyberpunk2077",
             "version": version,
             "force_down": False,
             "links": {"machineURL": "SchoolBoyQ"},
-        }]).encode()
+        }
+        if package_hash is not None:
+            release["download_metadata"] = {"Hash": package_hash}
+        return json.dumps([release]).encode()
 
     def test_actual_async_get_reports_newer_release(self):
         plugin = self.run_response(self.release_body("4.2.2"))
         self.assertIsNotNone(plugin._dialog)
         self.assertEqual(plugin._dialog.text(), "Chrome & Blood 4.2.2 is available. Open Wabbajack to install the update.")
-        self.assertEqual({button.text() for button in plugin._dialog.buttons()}, {"Open Wabbajack", "Close", "Don't show this version again"})
+        self.assertEqual({button.text() for button in plugin._dialog.buttons()}, {"Open Wabbajack", "Close", "Don't show this build again"})
+
+    def test_first_same_version_build_sets_baseline_then_changed_package_notifies(self):
+        first = self.run_response(self.release_body("4.2.1", "AAAAAAAAAAA="))
+        self.assertIsNone(first._dialog)
+        self.assertEqual(self.organizer.persistent(first.name(), "initial_build"), "4.2.1.0|package:AAAAAAAAAAA=")
+        unchanged = self.run_response(self.release_body("4.2.1", "AAAAAAAAAAA="))
+        self.assertIsNone(unchanged._dialog)
+        changed = self.run_response(self.release_body("4.2.1", "AQIDBAUGBwg="))
+        self.assertIsNotNone(changed._dialog)
+        self.assertIn("new Chrome & Blood 4.2.1 build has been published", changed._dialog.text())
+
+    def test_failed_check_does_not_establish_baseline(self):
+        failed = self.run_response(self.release_body("4.2.1", "AAAAAAAAAAA="), status=503)
+        self.assertEqual(self.organizer.preferences, {})
+        self.assertIsNone(failed._dialog)
+        self.assertIsNone(self.run_response(self.release_body("4.2.1", "AQIDBAUGBwg="))._dialog)
+
+    def test_installing_new_numeric_version_resets_publication_baseline(self):
+        self.run_response(self.release_body("4.2.1", "AAAAAAAAAAA="))
+        newer = self.run_response(self.release_body("4.2.2", "AQIDBAUGBwg="))
+        self.assertIsNotNone(newer._dialog)
+        self.click(newer, "Close")
+        settings_path = Path(self.organizer.directory) / "Chrome & Blood.compiler_settings"
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        settings["Version"] = "4.2.2"
+        settings_path.write_text(json.dumps(settings), encoding="utf-8")
+        installed = self.run_response(self.release_body("4.2.2", "AQIDBAUGBwg="))
+        self.assertIsNone(installed._dialog)
+        self.assertEqual(self.organizer.persistent(installed.name(), "initial_build"), "4.2.2.0|package:AQIDBAUGBwg=")
+        self.assertIsNotNone(self.run_response(self.release_body("4.2.2", "CAcGBQQDAgE="))._dialog)
+
+    def test_first_newer_version_still_notifies_with_package_hash(self):
+        self.assertIsNotNone(self.run_response(self.release_body("4.2.2", "AQIDBAUGBwg="))._dialog)
+
+    def test_same_version_close_reminds_on_restart_and_skip_does_not_hide_next_build(self):
+        self.run_response(self.release_body("4.2.1", "AAAAAAAAAAA="))
+        changed = self.run_response(self.release_body("4.2.1", "AQIDBAUGBwg="))
+        self.click(changed, "Close")
+        reminder = self.run_response(self.release_body("4.2.1", "AQIDBAUGBwg="))
+        self.assertIsNotNone(reminder._dialog)
+        self.click(reminder, "Don't show this build again")
+        self.assertIsNone(self.run_response(self.release_body("4.2.1", "AQIDBAUGBwg="))._dialog)
+        self.assertIsNotNone(self.run_response(self.release_body("4.2.1", "CAcGBQQDAgE="))._dialog)
+
+    def test_legacy_version_dismissal_does_not_hide_new_package(self):
+        self.organizer.setPersistent("Chrome & Blood Release Notice", "ignored_version", "4.2.2.0")
+        self.assertIsNotNone(self.run_response(self.release_body("4.2.2", "AQIDBAUGBwg="))._dialog)
+
+    def test_different_build_can_notify_again_in_same_session(self):
+        plugin = self.notification()
+        self.click(plugin, "Close")
+        plugin._notice = Notice("4.2.1", "4.2.2", "package:AQIDBAUGBwg=")
+        plugin._notify()
+        self.assertIsNotNone(plugin._dialog)
 
     def test_matching_release_is_silent(self):
         self.assertIsNone(self.run_response(self.release_body("4.2.1"))._dialog)
@@ -313,10 +370,10 @@ class NoticeQtTests(unittest.TestCase):
         self.assertIsNone(plugin._dialog)
         self.assertEqual(self.organizer.preferences, {})
 
-    def test_skip_persists_only_that_numeric_version(self):
+    def test_skip_without_package_metadata_persists_only_that_numeric_version(self):
         plugin = self.notification()
-        self.click(plugin, "Don't show this version again")
-        self.assertEqual(self.organizer.preferences, {(plugin.name(), "ignored_version"): "4.2.2.0"})
+        self.click(plugin, "Don't show this build again")
+        self.assertEqual(self.organizer.preferences, {(plugin.name(), "ignored_build"): "version:4.2.2.0"})
         same = self.notification("4.2.2.0")
         self.assertIsNone(same._dialog)
         newer = self.notification("4.2.3")
@@ -329,7 +386,7 @@ class NoticeQtTests(unittest.TestCase):
         self.assertIn("preview", plugin._dialog.windowTitle())
         self.assertIn("4.2.1", plugin._dialog.text())
         self.assertIn("will not be saved", plugin._dialog.informativeText())
-        self.click(plugin, "Don't show this version again")
+        self.click(plugin, "Don't show this build again")
         self.assertEqual(self.organizer.preferences, {})
         self.assertFalse(plugin._shown)
 

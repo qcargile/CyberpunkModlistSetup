@@ -15,7 +15,7 @@ class ChromeBloodUpdateNotice(mobase.IPluginTool):
         self._installed = None
         self._notice = None
         self._dialog = None
-        self._shown = False
+        self._shown = ""
         self._manager = None
         self._reply = None
         self._timer = None
@@ -76,16 +76,17 @@ class ChromeBloodUpdateNotice(mobase.IPluginTool):
             )
 
     def _notify(self):
-        if self._closed or not self._active() or self._shown or self._notice is None or self._dialog is not None:
+        if self._closed or not self._active() or self._notice is None or self._dialog is not None:
             return
-        ignored = self._organizer.persistent(self.name(), "ignored_version", "")
-        try:
-            if version_parts(ignored) == version_parts(self._notice.available):
-                return
-        except ValueError:
-            pass
-        self._shown = True
+        if self._shown == self._notice_key():
+            return
+        if self._organizer.persistent(self.name(), "ignored_build", "") == self._notice_key():
+            return
+        self._shown = self._notice_key()
         self._show_notification(self._notice.available)
+
+    def _notice_key(self):
+        return self._notice.build or "version:" + ".".join(str(part) for part in version_parts(self._notice.available))
 
     def _show_notification(self, version, preview=False):
         if self._closed or not self._active() or self._window is None:
@@ -98,14 +99,17 @@ class ChromeBloodUpdateNotice(mobase.IPluginTool):
         dialog.setWindowTitle("Chrome & Blood update notice preview" if preview else "Chrome & Blood update")
         dialog.setIcon(QMessageBox.Icon.Information)
         dialog.setTextFormat(Qt.TextFormat.PlainText)
-        dialog.setText(f"Chrome & Blood {version} is available. Open Wabbajack to install the update.")
+        if not preview and self._notice is not None and version_parts(self._notice.installed) == version_parts(version):
+            dialog.setText(f"A new Chrome & Blood {version} build has been published. Open Wabbajack to check for updates.")
+        else:
+            dialog.setText(f"Chrome & Blood {version} is available. Open Wabbajack to install the update.")
         if preview:
             dialog.setInformativeText("Preview only. Dismissal preferences will not be saved.")
         else:
             dialog.setInformativeText("Close the game and Mod Organizer before starting the installation in Wabbajack.")
         open_button = dialog.addButton("Open Wabbajack", QMessageBox.ButtonRole.AcceptRole)
         close_button = dialog.addButton("Close", QMessageBox.ButtonRole.RejectRole)
-        skip_button = dialog.addButton("Don't show this version again", QMessageBox.ButtonRole.ActionRole)
+        skip_button = dialog.addButton("Don't show this build again", QMessageBox.ButtonRole.ActionRole)
         dialog.setDefaultButton(close_button)
         dialog.setEscapeButton(close_button)
         dialog.setWindowModality(Qt.WindowModality.NonModal)
@@ -124,8 +128,7 @@ class ChromeBloodUpdateNotice(mobase.IPluginTool):
         if clicked is open_button:
             self._open_wabbajack()
         elif clicked is skip_button and not preview:
-            canonical = ".".join(str(part) for part in version_parts(version))
-            self._organizer.setPersistent(self.name(), "ignored_version", canonical)
+            self._organizer.setPersistent(self.name(), "ignored_build", self._notice_key())
         if preview:
             QTimer.singleShot(0, self._notify)
 
@@ -198,7 +201,15 @@ class ChromeBloodUpdateNotice(mobase.IPluginTool):
         data = bytes(self._data) if valid else b""
         self._release()
         if valid:
-            self._notice = update_notice(data, self._installed)
+            version_prefix = ".".join(str(part) for part in version_parts(self._installed)) + "|"
+            stored = self._organizer.persistent(self.name(), "initial_build", "")
+            baseline = stored[len(version_prefix):] if stored.startswith(version_prefix) else ""
+            candidate = update_notice(data, self._installed, baseline)
+            if not baseline and candidate is not None and candidate.build:
+                self._organizer.setPersistent(self.name(), "initial_build", version_prefix + candidate.build)
+                if version_parts(candidate.installed) == version_parts(candidate.available):
+                    return
+            self._notice = candidate
             if self._notice is not None:
                 self._notify()
 

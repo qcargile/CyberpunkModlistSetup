@@ -8,7 +8,7 @@ Preparation and MO2 plugins for Chrome & Blood, the Cyberpunk 2077 Wabbajack lis
 | --- | --- |
 | `ChromeBlood-Setup-1.0.1.zip` | Prepare the game and Windows, then open Chrome & Blood in Wabbajack. |
 | `ChromeBlood-Archives-1.0.1.zip` | Drag archives into order in MO2, with conflict highlights and an order saved per profile. |
-| `ChromeBlood-Update-Notice-1.0.zip` | Get a notification in MO2 when a newer Chrome & Blood list version is available. |
+| `ChromeBlood-Update-Notice-1.0.zip` | Get a notification in MO2 when a newer Chrome & Blood version or a changed Wabbajack package is published. |
 
 The plugins install independently. Setup does not install them. C&B list authors can include them in the Wabbajack package.
 

@@ -111,6 +111,28 @@ class ReleaseTests(unittest.TestCase):
         self.release["links"]["nexusCollection"]["lastRevisionNumber"] = 100
         self.assertIsNone(self.notice())
 
+    def test_same_version_build_changes_are_detected(self):
+        self.release["version"] = "4.2.1"
+        self.release["download_metadata"] = {"Hash": "AQIDBAUGBwg="}
+        data = json.dumps([self.release]).encode()
+        self.assertIsNone(update_notice(data, "4.2.1"))
+        self.assertIsNone(update_notice(data, "4.2.1", "package:AQIDBAUGBwg="))
+        self.assertEqual(
+            update_notice(data, "4.2.1", "package:AAAAAAAAAAA="),
+            Notice("4.2.1", "4.2.1", "package:AQIDBAUGBwg="),
+        )
+        self.assertIsNone(update_notice(data, "4.2.2", "package:AAAAAAAAAAA="))
+
+    def test_newer_version_retains_package_identity(self):
+        self.release["download_metadata"] = {"Hash": "AQIDBAUGBwg="}
+        self.assertEqual(self.notice(), Notice("4.2.1", "4.2.2", "package:AQIDBAUGBwg="))
+
+    def test_invalid_package_hash_does_not_supply_build_identity(self):
+        for metadata in ([], {}, {"Hash": None}, {"Hash": True}, {"Hash": "bad"}, {"Hash": "YQ=="}, {"Hash": "AAAAAAAAAAA=\n"}):
+            with self.subTest(metadata=metadata):
+                self.release["download_metadata"] = metadata
+                self.assertIsNone(self.notice())
+
     def test_malformed_collection_metadata_is_ignored(self):
         collection = self.release["links"]["nexusCollection"]
         for revision in (None, 0, -1, True, "6", 2147483648):
