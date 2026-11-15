@@ -61,7 +61,7 @@ public sealed record ProfileScanReceipt(
 public static class ProfileScanCoordinator
 {
     private const int PackedAnalysisSchema = 1;
-    private const int CodeAnalysisSchema = 9;
+    private const int CodeAnalysisSchema = 10;
 
     public static ProfileScanReceipt Scan(string mo2Root, Mo2Profile profile, DateTimeOffset scannedAtUtc)
         => Scan(mo2Root, profile, scannedAtUtc, null, CancellationToken.None);
@@ -293,7 +293,9 @@ public static class ProfileScanCoordinator
             SharedStateWriteFinding[] stateWrites = SharedStateWriteAnalyzer.Analyze(runtimeWrites);
             LuaCallbackEvidence[] callbacks = LuaCallbackEvidenceAnalyzer.Analyze(inventory.LuaSources);
             TweakAnalysisResult tweakAnalysis = TweakInteractionAnalyzer.AnalyzeDetailed(inventory.TweakSources);
-            InteractionFinding[] interactions = InteractionReportBuilder.Build(inventory, flows, callbacks, tweakAnalysis.Overlaps, tweakAnalysis.Operations, runtimeWrites);
+            SourceAnalysisFailure[] precedenceFailures = inventory.Failures.Concat(prepared.AdditionalFailures).Concat(virtualShadowScan.Failures).ToArray();
+            tweakAnalysis = tweakAnalysis with { Overlaps = tweakAnalysis.Overlaps.Select(overlap => overlap with { Precedence = SourcePrecedencePresentation.Restrict(overlap.Precedence, precedenceFailures, "TweakXL") }).ToArray() };
+            InteractionFinding[] interactions = InteractionReportBuilder.Build(inventory with { Failures = precedenceFailures }, flows, callbacks, tweakAnalysis.Overlaps, tweakAnalysis.Operations, runtimeWrites);
             CodeSourceCapture sourceCapture = CodeSourceEvidenceBuilder.BuildCapture(prepared.FileManifest, inventory, interactions, flows, callbacks, runtimeWrites, stateWrites, tweakAnalysis.Operations);
             int sourceItemCount = inventory.RedScripts.Length + inventory.LuaSources.Length + inventory.TweakSources.Length;
             phases.Add(new ScanPhaseMetric("effective source", phase.ElapsedMilliseconds, sourceItemCount));

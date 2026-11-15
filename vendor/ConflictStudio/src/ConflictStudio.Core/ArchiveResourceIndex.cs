@@ -17,7 +17,11 @@ public sealed record ArchiveResourceOutcome(
     [property: JsonIgnore] string[]? OtherArchives,
     ArchivePayloadRelation PayloadRelation = ArchivePayloadRelation.Unknown,
     string? RdarPayloadSha1 = null,
-    string? CookedPayloadSha256 = null);
+    string? CookedPayloadSha256 = null)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string[]? OverriddenArchives { get; init; }
+}
 
 public sealed record ArchiveConflictSummary(
     string ArchiveName,
@@ -90,7 +94,10 @@ public static class ArchiveResourceIndexBuilder
                     : unresolved || comparison == ArchivePayloadRelation.Unknown ? ArchivePayloadRelation.Unknown
                     : index == 0 ? ArchivePayloadRelation.NotApplicable
                     : comparison;
-                Add(buckets, provider, disposition, winner, archiveNames, relation);
+                string[]? overriddenArchives = disposition is ArchiveResourceDisposition.Winning or ArchiveResourceDisposition.WinningAndLosing
+                    ? ordered.Skip(index + 1).Select(value => value.ArchiveName).ToArray()
+                    : null;
+                Add(buckets, provider, disposition, winner, archiveNames, relation, overriddenArchives);
             }
         }
 
@@ -100,11 +107,11 @@ public static class ArchiveResourceIndexBuilder
             .ToArray();
     }
 
-    private static void Add(Dictionary<string, Buckets> buckets, ResourceProvider provider, ArchiveResourceDisposition disposition, string? winner, string[] otherArchives, ArchivePayloadRelation relation)
+    private static void Add(Dictionary<string, Buckets> buckets, ResourceProvider provider, ArchiveResourceDisposition disposition, string? winner, string[] otherArchives, ArchivePayloadRelation relation, string[]? overriddenArchives = null)
     {
         if (!buckets.TryGetValue(provider.ArchiveName, out Buckets? bucket)) buckets[provider.ArchiveName] = bucket = new Buckets();
         string display = provider.ResourcePath ?? $"resource hash {provider.ResourceHash}";
-        ArchiveResourceOutcome outcome = new(provider.ResourceHash, display, disposition, winner, provider.PayloadFingerprint, provider.ResourceType, provider.PathConfidence, otherArchives, relation, provider.PayloadSha1, provider.CookedPayloadSha256);
+        ArchiveResourceOutcome outcome = new(provider.ResourceHash, display, disposition, winner, provider.PayloadFingerprint, provider.ResourceType, provider.PathConfidence, otherArchives, relation, provider.PayloadSha1, provider.CookedPayloadSha256) { OverriddenArchives = overriddenArchives };
         if (disposition == ArchiveResourceDisposition.WinningAndLosing)
         {
             bucket.Winning.Add(outcome);

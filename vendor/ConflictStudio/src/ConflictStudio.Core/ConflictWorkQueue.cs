@@ -183,6 +183,8 @@ public static class ConflictWorkQueueBuilder
             EvidenceClassification classification = ClassifyInteraction(finding, interactions);
             if (classification is EvidenceClassification.Informational or EvidenceClassification.Composable or EvidenceClassification.Redundant) continue;
             (string summary, string action) = DescribeInteraction(finding, classification, interactions);
+            if (finding.RedScriptPrecedence is not null) summary += " " + SourcePrecedencePresentation.Describe(finding.RedScriptPrecedence);
+            if (finding.TweakPrecedence is not null) summary += " " + SourcePrecedencePresentation.Describe(finding.TweakPrecedence);
             (string? result, string? proof, string? meaning, string? boundary) = InteractionLabels(finding, interactions, classification);
             Add(items, receipt, decisions, ConflictSurface.ScriptAndTweak, finding.Target, classification, summary, action, null, InteractionProviders(finding, interactions), InteractionEvidence(finding, interactions), null, result, proof, meaning, boundary, InteractionFiles(finding, interactions), hash => comparisons.ForInteraction(hash, finding));
         }
@@ -330,6 +332,8 @@ public static class ConflictWorkQueueBuilder
     private static string[] InteractionEvidence(InteractionFinding finding, InteractionLookup interactions)
     {
         List<string> evidence = [finding.Kind.ToString()];
+        if (finding.RedScriptPrecedence is { } scripts) evidence.Add(PrecedenceEvidence(scripts, value => $"{value.Provider}|{CanonicalEvidencePath(value.FilePath)}|{value.BodySha256}"));
+        if (finding.TweakPrecedence is { } tweaks) evidence.Add(PrecedenceEvidence(tweaks, value => $"{value.Provider}|{CanonicalEvidencePath(value.FilePath)}|{value.Kind}|{value.Value}"));
         if (finding.TweakRuntimeEvidence is { } runtime)
         {
             evidence.AddRange(runtime.Declarations.Select(value => $"declarative|{value.Provider}|{CanonicalEvidencePath(value.FilePath)}|{value.Kind}|{value.Value}"));
@@ -372,6 +376,9 @@ public static class ConflictWorkQueueBuilder
         string comparison = conflict.Kind == ResourceConflictKind.OrderedOverlap ? "Payload comparison is unavailable, but the selected archive is established by the static order." : $"{conflict.Providers.Length - 1} lower archive provider{(conflict.Providers.Length == 2 ? string.Empty : "s")} contain a different payload.";
         return winner is null ? $"{conflict.EngineWinnerArchive} is first in the proven archive order. {comparison}" : $"{winner.Provider} supplies {winner.ArchiveName}, which is first in the proven archive order. {comparison}";
     }
+
+    private static string PrecedenceEvidence<T>(PrecedenceResult<T> result, Func<T, string> identity) where T : class
+        => $"precedence|{result.Status}|{(result.Winner is { } winner ? identity(winner) : string.Empty)}|{string.Join(";", result.Overridden.Select(identity))}";
 
     private static (string Summary, string Action) DescribeInteraction(InteractionFinding finding, EvidenceClassification classification, InteractionLookup interactions)
     {

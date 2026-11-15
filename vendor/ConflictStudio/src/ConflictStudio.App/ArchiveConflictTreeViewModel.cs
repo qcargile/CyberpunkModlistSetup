@@ -9,9 +9,11 @@ public sealed record ArchiveResourceNode(ArchiveResourceOutcome Outcome, Archive
 {
     public string Path => Outcome.DisplayName;
     public string[] OtherArchives => (Outcome.OtherArchives ?? []).Where(value => !string.Equals(value, ArchiveName, StringComparison.OrdinalIgnoreCase)).ToArray();
+    public string[] OverriddenArchives => Outcome.OverriddenArchives ?? (Outcome.Disposition == ArchiveResourceDisposition.Winning ? OtherArchives : []);
     public string ProviderContext => Tone switch
     {
-        ArchiveTreeTone.Winning => OtherArchives.Length == 0 ? "Effective file" : "Overrides: " + string.Join(", ", OtherArchives),
+        ArchiveTreeTone.Winning => OverriddenArchives.Length > 0 ? "Overrides: " + string.Join(", ", OverriddenArchives)
+            : Outcome.Disposition == ArchiveResourceDisposition.WinningAndLosing ? "Lower-priority archives not recorded" : "Effective file",
         ArchiveTreeTone.Losing => "Winner: " + (Outcome.WinnerArchive ?? "can't determine"),
         ArchiveTreeTone.Same => "Identical copy in: " + string.Join(", ", OtherArchives),
         ArchiveTreeTone.Unknown => "Winner cannot be determined",

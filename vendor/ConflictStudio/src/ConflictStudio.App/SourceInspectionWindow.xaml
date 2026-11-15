@@ -19,7 +19,7 @@
         <Grid Grid.Row="2" Margin="0,10,0,0">
             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
             <TextBox x:Name="SourceSearchTextBox" MaxLength="512" KeyDown="SearchKeyDown" ToolTip="Find literal text in this verified source file" AutomationProperties.Name="Search source" />
-            <Button x:Name="FindSourceButton" Grid.Column="1" Margin="8,0,0,0" Content="Find" Click="FindClicked" IsEnabled="False" />
+            <Button x:Name="FindSourceButton" Style="{DynamicResource PrimaryButton}" Grid.Column="1" Margin="8,0,0,0" Content="Find" Click="FindClicked" IsEnabled="False" />
             <Button x:Name="PreviousMatchButton" Grid.Column="2" Margin="8,0,0,0" Content="Previous" Click="PreviousMatchClicked" IsEnabled="False" />
             <Button x:Name="NextMatchButton" Grid.Column="3" Margin="8,0,0,0" Content="Next" Click="NextMatchClicked" IsEnabled="False" />
             <ComboBox x:Name="SourceFontSizeComboBox" Grid.Column="4" Width="76" Margin="8,0,0,0" SelectionChanged="FontSizeChanged" AutomationProperties.Name="Source text size">

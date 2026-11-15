@@ -55,6 +55,12 @@ public sealed record TweakRuntimeEvidence(TweakOperation[] Declarations, SharedS
 public sealed record InteractionFinding(string Target, InteractionFindingKind Kind, string Summary, string[] Providers)
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public PrecedenceResult<RedScriptHook>? RedScriptPrecedence { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public PrecedenceResult<TweakOperation>? TweakPrecedence { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public RedScriptFieldDeclaration[]? DeclarationEvidence { get; init; }
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -85,10 +91,16 @@ public static class InteractionReportBuilder
         ArgumentNullException.ThrowIfNull(runtimeWrites);
         ILookup<string, LuaCallbackEvidence> callbacksByTarget = luaCallbacks.ToLookup(value => value.Target, StringComparer.Ordinal);
         List<InteractionFinding> findings = [];
-        findings.AddRange(RedScriptInteractionAnalyzer.Analyze(inventory.RedScripts).Select(RedScriptFinding));
+        findings.AddRange(RedScriptInteractionAnalyzer.Analyze(inventory.RedScripts).Select(overlap => RedScriptFinding(overlap with
+        {
+            Precedence = SourcePrecedencePresentation.Restrict(overlap.Precedence, inventory.Failures, "RedScript")
+        })));
         findings.AddRange(LuaInteractionAnalyzer.Analyze(inventory.LuaSources).Select(LuaFinding));
         findings.AddRange(CrossLanguageFindings(redScriptFlows, callbacksByTarget));
-        findings.AddRange(tweakOverlaps.Select(TweakFinding));
+        findings.AddRange(tweakOverlaps.Select(overlap => TweakFinding(overlap with
+        {
+            Precedence = SourcePrecedencePresentation.Restrict(overlap.Precedence, inventory.Failures, "TweakXL")
+        })));
         findings.AddRange(TweakRuntimeFindings(tweakOperations, runtimeWrites));
         return findings.GroupBy(value => value.Target, StringComparer.Ordinal)
             .Select(group =>
@@ -98,7 +110,9 @@ public static class InteractionReportBuilder
                 return new InteractionFinding(group.Key, group.Min(value => value.Kind), string.Join(" ", group.Select(value => value.Summary).Distinct(StringComparer.Ordinal)), group.OrderBy(value => value.Providers.Length == 1).SelectMany(value => value.Providers).Distinct(StringComparer.OrdinalIgnoreCase).ToArray())
                 {
                     DeclarationEvidence = declarations.Length == 0 ? null : declarations,
-                    TweakRuntimeEvidence = runtime?.TweakRuntimeEvidence
+                    TweakRuntimeEvidence = runtime?.TweakRuntimeEvidence,
+                    RedScriptPrecedence = group.Select(value => value.RedScriptPrecedence).FirstOrDefault(value => value is not null),
+                    TweakPrecedence = group.Select(value => value.TweakPrecedence).FirstOrDefault(value => value is not null)
                 };
             })
             .OrderBy(value => value.Kind)
@@ -148,7 +162,7 @@ public static class InteractionReportBuilder
     private static InteractionFinding RedScriptFinding(RedScriptOverlap overlap)
     {
         string[] providers = overlap.Hooks.Select(value => value.Provider).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-        if (overlap.Kind == RedScriptOverlapKind.ExclusiveReplacement) return new InteractionFinding(overlap.Target, InteractionFindingKind.Exclusive, "Multiple active replacements declare exclusive source ownership of this method.", providers);
+        if (overlap.Kind == RedScriptOverlapKind.ExclusiveReplacement) return new InteractionFinding(overlap.Target, InteractionFindingKind.Exclusive, "Multiple active replacements declare exclusive source ownership of this method. " + SourcePrecedencePresentation.Describe(overlap.Precedence), providers) { RedScriptPrecedence = overlap.Precedence };
         if (overlap.Kind == RedScriptOverlapKind.RedundantReplacement) return new InteractionFinding(overlap.Target, InteractionFindingKind.Composable, providers.Length == 1 ? "Multiple declarations contain the same replacement body in analyzed source. This is redundant related source evidence, not a competing source outcome." : "Multiple active providers contain the same replacement body in analyzed source. This is redundant related source evidence, not a competing source outcome.", providers);
         if (overlap.Hooks.Count(value => value.Kind is RedScriptHookKind.AddMethod or RedScriptHookKind.AddField) > 1)
         {
@@ -187,6 +201,7 @@ public static class InteractionReportBuilder
             : overlap.Kind == TweakOverlapKind.BaseRecordDependency ? "A direct $base declaration names a record whose properties another provider changes. This is dependency provenance, not a resolved inherited value or a conflict verdict."
             : overlap.Kind == TweakOverlapKind.ScalarOverwrite ? $"{active} declare competing scalar values. This report does not infer a final winner."
             : $"{active} declare competing array operations. This report preserves the documented operations without resolving a final result.";
-        return new InteractionFinding(overlap.Target, kind, summary, providers);
+        if (overlap.Kind == TweakOverlapKind.ScalarOverwrite) summary = "Active declarations assign competing scalar values. " + SourcePrecedencePresentation.Describe(overlap.Precedence);
+        return new InteractionFinding(overlap.Target, kind, summary, providers) { TweakPrecedence = overlap.Precedence };
     }
 }

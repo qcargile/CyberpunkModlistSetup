@@ -11,11 +11,16 @@ public enum RedScriptOverlapKind { ExclusiveReplacement, CompositionReview, Adde
 
 public sealed record RedScriptHook(string Provider, string FilePath, RedScriptHookKind Kind, string Target, string? BodySha256 = null)
 {
+    public int LineNumber { get; init; }
+
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public RedScriptFieldDeclaration? Declaration { get; init; }
 }
 
-public sealed record RedScriptOverlap(string Target, RedScriptOverlapKind Kind, RedScriptHook[] Hooks);
+public sealed record RedScriptOverlap(string Target, RedScriptOverlapKind Kind, RedScriptHook[] Hooks)
+{
+    public PrecedenceResult<RedScriptHook>? Precedence { get; init; }
+}
 
 public static class RedScriptInteractionAnalyzer
 {
@@ -52,6 +57,7 @@ public static class RedScriptInteractionAnalyzer
                 string? bodySha256 = bodies.TryGetValue((source.Provider, source.FilePath, target), out Queue<string?>? bodyQueue) && bodyQueue.Count > 0 ? bodyQueue.Dequeue() : null;
                 hooks.Add(new RedScriptHook(source.Provider, source.FilePath, kind, target, bodySha256)
                 {
+                    LineNumber = RedScriptFlowEvidenceAnalyzer.LineAt(source.Text, annotation.Index),
                     Declaration = kind == RedScriptHookKind.AddField
                         ? new RedScriptFieldDeclaration(source.Provider, source.FilePath, RedScriptFlowEvidenceAnalyzer.LineAt(source.Text, declaration.Index), declaration.Groups["type"].Value.Trim())
                         : null
@@ -71,7 +77,12 @@ public static class RedScriptInteractionAnalyzer
         }
 
         return hooks.GroupBy(value => value.Target, StringComparer.Ordinal)
-            .Select(group => new RedScriptOverlap(group.Key, Classify(group), group.ToArray()))
+            .Select(group =>
+            {
+                RedScriptHook[] values = group.ToArray();
+                RedScriptOverlapKind kind = Classify(values);
+                return new RedScriptOverlap(group.Key, kind, values) { Precedence = kind == RedScriptOverlapKind.ExclusiveReplacement ? SourcePrecedence.Scripts(values) : null };
+            })
             .Where(ShouldReport)
             .OrderBy(value => value.Target, StringComparer.Ordinal)
             .ToArray();

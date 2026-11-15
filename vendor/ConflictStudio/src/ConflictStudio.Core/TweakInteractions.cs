@@ -63,7 +63,10 @@ public sealed record TweakOperation(
     internal int RecordEndLine { get; init; }
 }
 
-public sealed record TweakOverlap(string Target, TweakOverlapKind Kind, TweakOperation[] Operations);
+public sealed record TweakOverlap(string Target, TweakOverlapKind Kind, TweakOperation[] Operations)
+{
+    public PrecedenceResult<TweakOperation>? Precedence { get; init; }
+}
 
 public sealed record TweakAnalysisResult(TweakOverlap[] Overlaps, SourceAnalysisFailure[] Failures)
 {
@@ -96,6 +99,7 @@ public static class TweakInteractionAnalyzer
                 return new TweakOverlap(group.Key, kind, RelevantOperations(group, kind));
             })
             .Where(ShouldReport)
+            .Select(overlap => overlap.Kind == TweakOverlapKind.ScalarOverwrite ? overlap with { Precedence = failures.Count == 0 ? SourcePrecedence.Tweaks(overlap.Operations) : new PrecedenceResult<TweakOperation>(PrecedenceStatus.Unresolved, null, [], "Tweak source parsing failed, so competing writes may be missing.") } : overlap)
             .ToList();
         overlaps.AddRange(SourceDependencies(operations));
         overlaps.AddRange(BaseDependencies(operations));

@@ -7,6 +7,8 @@ $root = Split-Path -Parent $PSScriptRoot
 $properties = [xml](Get-Content -LiteralPath (Join-Path $root 'Directory.Build.props') -Raw)
 $version = [version]$properties.Project.PropertyGroup.Version
 $label = if ($version.Build -eq 0) { $version.ToString(2) } else { $version.ToString(3) }
+$archivesLabel = '1.0.2'
+$noticeLabel = '1.0'
 $output = Join-Path $root "dist\$label"
 if (Test-Path -LiteralPath $output) { throw "Output already exists: $output" }
 if (-not (Test-Path -LiteralPath (Join-Path $root 'LICENSE'))) { throw 'The project license is missing.' }
@@ -21,7 +23,7 @@ $bridge = Join-Path $archives 'Tools\Conflict Studio\Mo2Bridge'
 if ($LASTEXITCODE -ne 0) { throw 'Setup publish failed.' }
 & dotnet publish (Join-Path $root 'vendor\ConflictStudio\src\ConflictStudio.Mo2Bridge\ConflictStudio.Mo2Bridge.csproj') -c Release -r win-x64 --self-contained true -o $bridge
 if ($LASTEXITCODE -ne 0) { throw 'Archive bridge publish failed.' }
-& dotnet publish (Join-Path $root 'vendor\ConflictStudio\src\ConflictStudio.App\ConflictStudio.App.csproj') -c Release -r win-x64 --self-contained true '-p:PublishSingleFile=true' '-p:IncludeNativeLibrariesForSelfExtract=true' '-p:EnableCompressionInSingleFile=true' "-p:InformationalVersion=1.0.1+chrome-blood-tools.$label" -o $studio
+& dotnet publish (Join-Path $root 'vendor\ConflictStudio\src\ConflictStudio.App\ConflictStudio.App.csproj') -c Release -r win-x64 --self-contained true '-p:PublishSingleFile=true' '-p:IncludeNativeLibrariesForSelfExtract=true' '-p:EnableCompressionInSingleFile=true' "-p:InformationalVersion=1.0.2+chrome-blood-tools.$archivesLabel" -o $studio
 if ($LASTEXITCODE -ne 0) { throw 'Conflict Studio companion publish failed.' }
 
 $dotnetRoot = Split-Path -Parent (Get-Command dotnet -ErrorAction Stop).Source
@@ -54,8 +56,8 @@ foreach ($package in @(
 
 $packages = @(
     @{ Root = $setup; Name = "ChromeBlood-Setup-$label.zip" },
-    @{ Root = $archives; Name = "ChromeBlood-Archives-$label.zip" },
-    @{ Root = $notice; Name = "ChromeBlood-Update-Notice-$label.zip" }
+    @{ Root = $archives; Name = "ChromeBlood-Archives-$archivesLabel.zip" },
+    @{ Root = $notice; Name = "ChromeBlood-Update-Notice-$noticeLabel.zip" }
 )
 foreach ($package in $packages) {
     if (Get-ChildItem -LiteralPath $package.Root -Recurse -File | Where-Object { $_.Extension -in @('.pdb', '.pyc') }) { throw 'Debug or Python cache files entered a package.' }

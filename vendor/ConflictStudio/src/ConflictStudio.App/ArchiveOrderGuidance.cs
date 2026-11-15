@@ -9,8 +9,8 @@ public static class ArchiveOrderGuidance
         ArgumentNullException.ThrowIfNull(evidence);
         if (evidence.Kind != ArchiveOrderEvidenceKind.Unresolved)
         {
-            if (evidence.UnlistedArchives.Length > 0) return evidence.UnlistedArchives.Length == 1 ? "Add unlisted archive" : "Add unlisted archives";
-            return evidence.IgnoredEntries.Length > 0 && !evidence.PreserveInactiveArchives ? "Clean inactive entry" : "View load order";
+            if (evidence.UnlistedArchives.Length > 0) return "Review additions";
+            return evidence.IgnoredEntries.Length > 0 && !evidence.PreserveInactiveArchives ? "Review cleanup" : "View load order";
         }
         if (evidence.IsRepairableLegacyOrder) return "Review repair draft";
         if (evidence.IncompleteArchiveLane != ArchiveOrderProblemLane.None) return "Show scan details";
@@ -45,10 +45,23 @@ public static class ArchiveOrderGuidance
     internal static string MaintenanceTitle(ArchiveOrderEvidence evidence)
     {
         ArgumentNullException.ThrowIfNull(evidence);
-        if (evidence.UnlistedArchives.Length > 0 && evidence.IgnoredEntries.Length > 0 && !evidence.PreserveInactiveArchives) return "Order verified; optional cleanup is available";
-        if (evidence.UnlistedArchives.Length > 0) return "Order verified; unlisted archives can be added";
+        if (evidence.UnlistedArchives.Length > 0) return evidence.UnlistedArchives.Length == 1 ? "1 archive is not in your saved order" : $"{evidence.UnlistedArchives.Length} archives are not in your saved order";
         if (evidence.PreserveInactiveArchives) return "Order verified; inactive archive positions are kept";
         return "Order verified; inactive entries can be cleaned";
+    }
+
+    internal static string Summary(ArchiveOrderEvidence evidence, ModManagerKind managerKind)
+    {
+        ArgumentNullException.ThrowIfNull(evidence);
+        if (evidence.IsRepairableLegacyOrder) return "Review the repair draft before saving. Nothing has been written yet.";
+        if (evidence.Kind == ArchiveOrderEvidenceKind.Unresolved) return Instruction(evidence, managerKind);
+        if (evidence.UnlistedArchives.Length > 0)
+        {
+            string cleanup = evidence.IgnoredEntries.Length > 0 && !evidence.PreserveInactiveArchives ? " Saving also removes inactive entries; see details." : string.Empty;
+            return "These archives are shown after your saved archives. Your existing order is preserved. Find them to choose their positions, then review and apply when ready." + cleanup;
+        }
+        if (evidence.IgnoredEntries.Length > 0 && !evidence.PreserveInactiveArchives) return "Inactive entries do not affect the current results. Review the proposed cleanup before applying it.";
+        return "Your current archive order is shown below. Scanning does not save load-order changes.";
     }
 
     public static string Instruction(ArchiveOrderEvidence evidence, ModManagerKind managerKind = ModManagerKind.Mo2)

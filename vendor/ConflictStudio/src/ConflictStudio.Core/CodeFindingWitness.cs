@@ -308,7 +308,7 @@ internal sealed class CodeFindingWitnessBuilder
     {
         List<CodeFindingWitness> witnesses = [];
         if (finding.TweakRuntimeEvidence is { } runtime) AddDeclarationRuntime(witnesses, evidenceSha256, finding.Target, runtime);
-        if (_tweaks.TryGetValue(finding.Target, out TweakOverlap? tweak)) AddTweak(witnesses, evidenceSha256, tweak);
+        if (_tweaks.TryGetValue(finding.Target, out TweakOverlap? tweak)) AddTweak(witnesses, evidenceSha256, tweak with { Precedence = finding.TweakPrecedence });
         AddMethods(witnesses, evidenceSha256, finding, _flows[finding.Target].ToArray());
         return witnesses.ToArray();
     }
@@ -369,7 +369,7 @@ internal sealed class CodeFindingWitnessBuilder
         if (overlap.Kind == TweakOverlapKind.ScalarOverwrite)
         {
             CodeFindingParticipant[] participants = operations.Where(value => value.Kind == TweakOperationKind.ScalarAssignment).Select(value => TweakParticipant(value, CodeFindingParticipantRole.ValueDeclaration, "Declares value", overlap.Target)).ToArray();
-            Add(witnesses, Create(evidenceSha256, CodeFindingWitnessKind.ScalarValue, "Different declared values", "The sources assign different scalar values to the same field.", "The source values differ. The comparison does not establish which value the game uses.", overlap.Target, participants));
+            Add(witnesses, Create(evidenceSha256, CodeFindingWitnessKind.ScalarValue, "Different declared values", "The sources assign different scalar values to the same field. " + SourcePrecedencePresentation.Describe(overlap.Precedence), "The comparison predicts source precedence only when supported. Later runtime writes can change the value.", overlap.Target, participants));
             return;
         }
         if (overlap.Kind == TweakOverlapKind.RecordDefinitionCollision)
@@ -390,7 +390,7 @@ internal sealed class CodeFindingWitnessBuilder
         if (finding.Kind == InteractionFindingKind.Exclusive && replacements.Length > 1)
         {
             CodeFindingParticipant[] participants = replacements.Select(value => FlowParticipant(value, CodeFindingParticipantRole.Replacement, "Replaces method")).ToArray();
-            Add(witnesses, Create(evidenceSha256, CodeFindingWitnessKind.ExclusiveReplacement, "Different method replacements", "These declarations replace the same RedScript method with different bodies.", "Only the source replacements are compared. This does not establish a compiler error or a gameplay symptom.", finding.Target, participants));
+            Add(witnesses, Create(evidenceSha256, CodeFindingWitnessKind.ExclusiveReplacement, "Different method replacements", "These declarations replace the same RedScript method with different bodies. " + SourcePrecedencePresentation.Describe(finding.RedScriptPrecedence), "Only the source replacements are compared. This does not establish a compiler error or a gameplay symptom.", finding.Target, participants));
         }
         RedScriptFlowEvidence[] additions = flows.Where(value => value.Kind == RedScriptFlowKind.Add).ToArray();
         if (additions.Length > 1)

@@ -11,11 +11,16 @@ public sealed class ArchiveRailItem : INotifyPropertyChanged
     private ArchiveRelationshipTone _relationshipTone;
     private ArchiveDropCue _dropCue;
 
-    public ArchiveRailItem(string archiveName) => ArchiveName = archiveName;
+    public ArchiveRailItem(string archiveName, bool isUnlisted = false)
+    {
+        ArchiveName = archiveName;
+        IsUnlisted = isUnlisted;
+    }
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
     public string ArchiveName { get; }
+    public bool IsUnlisted { get; }
 
     public ArchiveRelationshipTone RelationshipTone
     {

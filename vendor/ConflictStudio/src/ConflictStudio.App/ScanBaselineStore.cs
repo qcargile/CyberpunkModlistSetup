@@ -20,7 +20,7 @@ public sealed class ScanBaselineStore
     public ScanBaselineLoadResult Load(ProfileScanReceipt current)
     {
         ArgumentNullException.ThrowIfNull(current);
-        if (!File.Exists(_path)) return new ScanBaselineLoadResult(null, ScanBaselineState.Missing, "No pinned baseline is saved for this profile.", _path);
+        if (!File.Exists(_path)) return new ScanBaselineLoadResult(null, ScanBaselineState.Missing, "No reference scan is saved for this profile. Save one before changing mods if you want a fixed comparison point.", _path);
         ProfileScanReceipt baseline;
         try
         {
@@ -28,10 +28,10 @@ public sealed class ScanBaselineStore
         }
         catch (Exception exception) when (exception is ProfileScanReceiptException or IOException or UnauthorizedAccessException)
         {
-            return new ScanBaselineLoadResult(null, ScanBaselineState.Unreadable, "The pinned baseline could not be read. It was preserved so you can replace or clear it explicitly.", _path);
+            return new ScanBaselineLoadResult(null, ScanBaselineState.Unreadable, "The saved reference scan could not be read. It was preserved so you can replace or remove it explicitly.", _path);
         }
-        if (!SameProfile(baseline, current)) return new ScanBaselineLoadResult(null, ScanBaselineState.Foreign, "The pinned baseline belongs to a different manager installation or profile. It was preserved.", _path);
-        return new ScanBaselineLoadResult(baseline, ScanBaselineState.Available, $"Pinned scan from {baseline.ScannedAtUtc:u}", _path);
+        if (!SameProfile(baseline, current)) return new ScanBaselineLoadResult(null, ScanBaselineState.Foreign, "The saved reference scan belongs to a different manager installation or profile. It was preserved.", _path);
+        return new ScanBaselineLoadResult(baseline, ScanBaselineState.Available, $"Saved reference scan from {baseline.ScannedAtUtc:u}", _path);
     }
 
     public void Pin(ProfileScanReceipt current)

@@ -93,7 +93,7 @@ public partial class MainWindow
             HistoryReferenceComboBox.IsEnabled = HistoryFilterComboBox.IsEnabled = true;
             if (restoreView && viewRevision == _viewChangeRevision) ApplyProfileView(view);
             PinBaselineButton.IsEnabled = true;
-            PinBaselineButton.Content = baseline.State == ScanBaselineState.Missing ? "Pin current scan" : "Replace baseline";
+            PinBaselineButton.Content = baseline.State == ScanBaselineState.Missing ? "Save reference scan" : "Replace reference scan";
             ClearBaselineButton.IsEnabled = baseline.State != ScanBaselineState.Missing;
             BaselineStatusTextBlock.Text = baseline.Message;
             if (result.InvalidHistory)
@@ -149,7 +149,7 @@ public partial class MainWindow
         OpenHistoryFindingButton.IsEnabled = false;
         if (previous is null || current is null)
         {
-            HistorySummaryTextBlock.Text = SelectedTag(HistoryReferenceComboBox, "previous") == "baseline" ? "No usable pinned baseline. Pin the current scan to compare after your next update." : "No earlier scan is available for comparison. Run another scan after making changes.";
+            HistorySummaryTextBlock.Text = SelectedTag(HistoryReferenceComboBox, "previous") == "baseline" ? "No usable reference scan is saved. Save this scan as a reference, make your changes, then scan again." : "This profile needs two scans to compare. Keep this scan, make your changes, then scan again.";
             HistoryNoticeTextBlock.Text = _baseline?.State is ScanBaselineState.Foreign or ScanBaselineState.Unreadable ? _baseline.Message : string.Empty;
             return;
         }
@@ -186,7 +186,7 @@ public partial class MainWindow
         ScanHistoryEntry[] rows = comparison.Entries.Where(entry => filter == "All" || filter == "Changes" && entry.ChangeKind != ScanHistoryChangeKind.Unchanged || entry.ChangeKind.ToString() == filter).ToArray();
         HistoryDataGrid.ItemsSource = rows;
         HistoryDataGrid.SelectedItem = rows.FirstOrDefault();
-        HistorySummaryTextBlock.Text = $"{comparison.Previous.ScannedAtUtc.LocalDateTime:g} → {comparison.Current.ScannedAtUtc.LocalDateTime:g} · {rows.Length:N0} shown of {comparison.Entries.Length:N0} recorded findings";
+        HistorySummaryTextBlock.Text = ScanHistoryPresentation.Describe(comparison, rows.Length);
     }
 
     private void HistorySelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -265,7 +265,7 @@ public partial class MainWindow
             if (!_investigationClosed && ReferenceEquals(receipt, _receipt))
             {
                 PinBaselineButton.IsEnabled = true;
-                PinBaselineButton.Content = _baseline?.State == ScanBaselineState.Missing ? "Pin current scan" : "Replace baseline";
+                PinBaselineButton.Content = _baseline?.State == ScanBaselineState.Missing ? "Save reference scan" : "Replace reference scan";
                 ClearBaselineButton.IsEnabled = _baseline?.State is not null and not ScanBaselineState.Missing;
             }
         }
@@ -284,7 +284,7 @@ public partial class MainWindow
         HistoryDataGrid.ItemsSource = null;
         PinBaselineButton.IsEnabled = ClearBaselineButton.IsEnabled = OpenHistoryFindingButton.IsEnabled = false;
         HistoryReferenceComboBox.IsEnabled = HistoryFilterComboBox.IsEnabled = false;
-        HistorySummaryTextBlock.Text = "Run a scan to compare recorded findings.";
+        HistorySummaryTextBlock.Text = "Scan before changing mods, then scan again to compare the findings.";
         HistoryNoticeTextBlock.Text = BaselineStatusTextBlock.Text = string.Empty;
         HistoryAnalysisNoticeTextBlock.Text = string.Empty;
         CoverageSummaryTextBlock.Text = "Run a scan to see its coverage.";
